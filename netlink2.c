@@ -41,12 +41,12 @@
 
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-#include <netlink/object-api.h>
-#include <netlink/object.h>
-#include <netlink/socket.h>
-#include <netlink/route/addr.h>
-#include <netlink/route/rtnl.h>
-#include <netlink/route/link.h>
+//#include <netlink/object-api.h>
+//#include <netlink/object.h>
+//#include <netlink/socket.h>
+//#include <netlink/route/addr.h>
+//#include <netlink/route/rtnl.h>
+//#include <netlink/route/link.h>
 #include <libmnl/libmnl.h>
 
 #define MYPROTO NETLINK_ROUTE
@@ -118,69 +118,6 @@ static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 //   return (0);
 // }
 
-static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr *))
-{
-    int status;
-    int ret = 0;
-    char buf[4096];
-    //struct iovec iov = { buf, sizeof buf };
-    //struct sockaddr_nl snl;
-    //struct msghdr msg = { (void*)&snl, sizeof snl, &iov, 1, NULL, 0, 0};
-    struct nlmsghdr *h;
-    
-    status = mnl_socket_recvfrom(nl, buf, sizeof buf);
-
-    if(status < 0)
-    {
-        /* Socket non-blocking so bail out once we have read everything */
-        if (errno == EWOULDBLOCK || errno == EAGAIN)
-            return ret;
-
-        /* Anything else is an error */
-        ERROR("read_netlink: Error mnl_socket_recvfrom: %d\n", status);
-        return status;
-    }
-        
-    if(status == 0)
-    {
-        printf("read_netlink: EOF\n");
-    }
-
-    /* We need to handle more than one message per 'recvmsg' */
-    for(h = (struct nlmsghdr *) buf; NLMSG_OK (h, (unsigned int)status); 
-    h = NLMSG_NEXT (h, status))
-    {
-        /* Finish reading */
-        if (h->nlmsg_type == NLMSG_DONE)
-            return ret;
-
-        /* Message is some kind of error */
-        if (h->nlmsg_type == NLMSG_ERROR)
-        {
-            printf("read_netlink: Message is an error - decode TBD\n");
-            return -1; // Error
-        }
-
-        /* Call message handler */
-        if(msg_handler)
-        {
-            ret = (*msg_handler)(h);
-            if(ret < 0)
-            {
-                printf("read_netlink: Message hander error %d\n", ret);
-                return ret;
-            }
-        }
-        else
-        {
-            printf("read_netlink: Error NULL message handler\n");
-            return -1;
-        }
-    }
-
-    return ret;
-}
-
 static int netlink_link_state(struct nlmsghdr *msg)
 {
     int retval;
@@ -247,7 +184,7 @@ static int netlink_link_state(struct nlmsghdr *msg)
         continue;
 
       if (mnl_attr_validate(attr, MNL_TYPE_STRING) < 0) {
-        ERROR("netlink2 plugin: link_filter_cb: IFLA_IFNAME mnl_attr_validate "
+        ERROR("netlink2 plugin: netlink_link_state: IFLA_IFNAME mnl_attr_validate "
               "failed.");
         return MNL_CB_ERROR;
       }
@@ -256,11 +193,16 @@ static int netlink_link_state(struct nlmsghdr *msg)
 
       for (il = interfacelist_head; il != NULL; il = il->next)
         if (strcmp(dev, il->interface) == 0)
+        {
+          printf("Found interface: %s\n", dev);
           break;
+        }
 
       if (il == NULL) 
+      {
         INFO("netlink2 plugin: Ignoring link state change for unmonitored interface: %s", dev);
-      else 
+        printf("netlink2 plugin: Ignoring link state change for unmonitored interface: %s\n", dev);
+      } else 
         il->status = ((ifi->ifi_flags & IFF_RUNNING) ? 1 : 0);
 
       // no need to loop again, we found the interface name
@@ -305,6 +247,127 @@ static int msg_handler(struct nlmsghdr *msg)
     return 0;
 }
 
+static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr *))
+{
+    int status;
+    int ret = 0;
+    char buf[4096];
+    //struct iovec iov = { buf, sizeof buf };
+    //struct sockaddr_nl snl;
+    //struct msghdr msg = { (void*)&snl, sizeof snl, &iov, 1, NULL, 0, 0};
+    struct nlmsghdr *h;
+    // struct rtgenmsg *rt;
+    // unsigned int seq;
+
+    // //unsigned int portid = mnl_socket_get_portid(nl);
+
+    // h = mnl_nlmsg_put_header(buf);
+    // h->nlmsg_type = RTM_GETLINK;
+    // h->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
+    // h->nlmsg_seq = seq = time(NULL);
+    // rt = mnl_nlmsg_put_extra_header(h, sizeof(*rt));
+    // rt->rtgen_family = AF_PACKET;
+
+    // if (mnl_socket_sendto(nl, h, h->nlmsg_len) < 0) {
+    //   FILE *f = fopen("/tmp/senderror.txt", "w");
+    //   if (f == NULL)
+    //   {
+    //       printf("Error opening file!\n");
+    //       exit(1);
+    //   }
+
+    //   /* print some text */
+    //   const char *text = "netlink plugin: ir_read: rtnl_wilddump_request failed.";
+    //   fprintf(f, "%s\n", text);
+    //   fclose(f);
+
+    //   ERROR("netlink plugin: ir_read: rtnl_wilddump_request failed.");
+    //   return (-1);
+    // }
+    
+    FILE *f = fopen("/tmp/readwait.txt", "w");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+
+    /* print some text */
+    const char *text = "Here";
+    fprintf(f, "%s\n", text);
+    fclose(f);
+
+    status = mnl_socket_recvfrom(nl, buf, sizeof(buf));
+
+    f = fopen("/tmp/readevent.txt", "w");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+
+    /* print some text */
+    fprintf(f, "%s\n", text);
+    fclose(f);
+
+    if(status < 0)
+    {
+        /* Socket non-blocking so bail out once we have read everything */
+        if (errno == EWOULDBLOCK || errno == EAGAIN)
+            return ret;
+
+        /* Anything else is an error */
+        ERROR("read_netlink: Error mnl_socket_recvfrom: %d\n", status);
+        return status;
+    }
+        
+    if(status == 0)
+    {
+        printf("read_netlink: EOF\n");
+    }
+
+    // while (ret > 0) {
+    //   ret = mnl_cb_run(buf, ret, seq, portid, link_filter_cb, NULL);
+    //   if (ret <= MNL_CB_STOP)
+    //     break;
+    //   ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
+    // }
+
+    /* We need to handle more than one message per 'recvmsg' */
+    for(h = (struct nlmsghdr *) buf; NLMSG_OK (h, (unsigned int)status); 
+    h = NLMSG_NEXT (h, status))
+    {
+        /* Finish reading */
+        if (h->nlmsg_type == NLMSG_DONE)
+            return ret;
+
+        /* Message is some kind of error */
+        if (h->nlmsg_type == NLMSG_ERROR)
+        {
+            printf("read_netlink: Message is an error - decode TBD\n");
+            return -1; // Error
+        }
+
+        /* Call message handler */
+        if(msg_handler)
+        {
+            ret = (*msg_handler)(h);
+            if(ret < 0)
+            {
+                printf("read_netlink: Message hander error %d\n", ret);
+                return ret;
+            }
+        }
+        else
+        {
+            printf("read_netlink: Error NULL message handler\n");
+            return -1;
+        }
+    }
+
+    return ret;
+}
+
 static void *interface_thread(void *arg) /* {{{ */
 {
   pthread_mutex_lock(&interface_lock);
@@ -333,12 +396,13 @@ static void *interface_thread(void *arg) /* {{{ */
   //     return ((void *)-1);
   // }
 
-  sock = mnl_socket_open(PF_NETLINK);
+  sock = mnl_socket_open(NETLINK_ROUTE);   //PF_NETLINK
   if (sock == NULL) {
     ERROR("netlink2 plugin: interface_thread: mnl_socket_open failed.");
     return ((void *)-1);
   }
 
+  // RTMGRP_LINK
   if (mnl_socket_bind(sock, RTMGRP_LINK, MNL_SOCKET_AUTOPID) < 0) {
     ERROR("netlink2 plugin: interface_thread: mnl_socket_bind failed.");
     return ((void *)-1);
@@ -350,8 +414,20 @@ static void *interface_thread(void *arg) /* {{{ */
 
     pthread_mutex_unlock(&interface_lock);
 
-    status = read_event(sock, msg_handler);
+    FILE *f = fopen("/tmp/ajb.txt", "w");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
 
+    /* print some text */
+    const char *text = "Here";
+    fprintf(f, "%s\n", text);
+    fclose(f);
+
+    status = read_event(sock, msg_handler);
+    
     pthread_mutex_lock(&interface_lock);
 
     if (status < 0)
@@ -380,6 +456,18 @@ static int start_thread(void) /* {{{ */
     pthread_mutex_unlock(&interface_lock);
     return (0);
   }
+
+  FILE *f = fopen("/tmp/startthread.txt", "w");
+  if (f == NULL)
+  {
+      printf("Error opening file!\n");
+      exit(1);
+  }
+
+  /* print some text */
+  const char *text = "Here";
+  fprintf(f, "%s\n", text);
+  fclose(f);
 
   interface_thread_loop = 1;
   interface_thread_error = 0;
@@ -427,6 +515,19 @@ static int stop_thread(void) /* {{{ */
 
 static int interface_init(void) /* {{{ */
 {
+  FILE *f = fopen("/tmp/interfaceinit.txt", "w");
+  if (f == NULL)
+  {
+      printf("Error opening file!\n");
+      exit(1);
+  }
+
+  /* print some text */
+  const char *text = "Here";
+  fprintf(f, "%s\n", text);
+  fputs("This is testing for fputs...\n", f);
+  fclose(f);
+
   if (interfacelist_head == NULL) {
     NOTICE("netlink2 plugin: No interfaces have been configured.");
     return (-1);
@@ -480,6 +581,19 @@ static int interface_config(const char *key, const char *value) /* {{{ */
     il->status = 2;
     il->next = interfacelist_head;
     interfacelist_head = il;
+
+    FILE *f = fopen("/tmp/interface.txt", "w");
+    if (f == NULL)
+    {
+        printf("Error opening file!\n");
+        exit(1);
+    }
+
+    /* print some text */
+    const char *text = "Here";
+    fprintf(f, "%s\n", text);
+    fputs("This is testing for fputs...\n", f);
+    fclose(f);
   } else {
     return (-1);
   }
