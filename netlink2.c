@@ -193,17 +193,27 @@ static int netlink_link_state(struct nlmsghdr *msg)
 
       for (il = interfacelist_head; il != NULL; il = il->next)
         if (strcmp(dev, il->interface) == 0)
-        {
-          printf("Found interface: %s\n", dev);
           break;
-        }
 
       if (il == NULL) 
       {
         INFO("netlink2 plugin: Ignoring link state change for unmonitored interface: %s", dev);
-        printf("netlink2 plugin: Ignoring link state change for unmonitored interface: %s\n", dev);
-      } else 
+        //printf("netlink2 plugin: Ignoring link state change for unmonitored interface: %s\n", dev);
+      } else {
+        time_t current_time;
+        struct tm * time_info;
+        char timeString[9];  // space for "HH:MM:SS\0"
+
+        time(&current_time);
+        time_info = localtime(&current_time);
+
+        strftime(timeString, sizeof(timeString), "%H:%M:%S", time_info);
+        
+        INFO("netlink2 plugin: Interface %s status is now %s", dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
+        printf("netlink2 plugin: (%s): Interface %s status is now %s\n", timeString, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
+
         il->status = ((ifi->ifi_flags & IFF_RUNNING) ? 1 : 0);
+      }
 
       // no need to loop again, we found the interface name
       // (otherwise the first if-statement in the loop would
@@ -233,7 +243,6 @@ static int msg_handler(struct nlmsghdr *msg)
             printf("msg_handler: RTM_DELROUTE\n");
             break;
         case RTM_NEWLINK:
-            printf("msg_handler: RTM_NEWLINK\n");
             netlink_link_state(msg);
             break;
         case RTM_DELLINK:
