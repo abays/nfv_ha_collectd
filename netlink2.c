@@ -610,15 +610,17 @@ static int interface_config(const char *key, const char *value) /* {{{ */
   return (0);
 } /* }}} int interface_config */
 
-static void submit(const char *host, const char *type, /* {{{ */
-                   absolute_t value) {
+static void submit(const char *interface, const char *type, /* {{{ */
+                   gauge_t value) {
   value_list_t vl = VALUE_LIST_INIT;
 
-  vl.values = &(value_t){.absolute = value};
+  vl.values = &(value_t){.gauge = value};
   vl.values_len = 1;
   sstrncpy(vl.plugin, "netlink2", sizeof(vl.plugin));
-  sstrncpy(vl.type_instance, host, sizeof(vl.type_instance));
+  sstrncpy(vl.type_instance, interface, sizeof(vl.type_instance));
   sstrncpy(vl.type, type, sizeof(vl.type));
+
+  INFO("Dispatching state %d for interface %s", (int) value, interface);
 
   plugin_dispatch_values(&vl);
 } /* }}} void interface_submit */
@@ -650,7 +652,7 @@ static int interface_read(void) /* {{{ */
 
     pthread_mutex_unlock(&interface_lock);
 
-    submit(il->interface, "absolute", status);
+    submit(il->interface, "gauge", status);
   } /* }}} for (il = interfacelist_head; il != NULL; il = il->next) */
 
   return (0);
