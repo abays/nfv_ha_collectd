@@ -293,31 +293,8 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
     //   ERROR("netlink plugin: ir_read: rtnl_wilddump_request failed.");
     //   return (-1);
     // }
-    
-    FILE *f = fopen("/tmp/readwait.txt", "w");
-    if (f == NULL)
-    {
-        printf("Error opening file!\n");
-        exit(1);
-    }
-
-    /* print some text */
-    const char *text = "Here";
-    fprintf(f, "%s\n", text);
-    fclose(f);
 
     status = mnl_socket_recvfrom(nl, buf, sizeof(buf));
-
-    f = fopen("/tmp/readevent.txt", "w");
-    if (f == NULL)
-    {
-        printf("Error opening file!\n");
-        exit(1);
-    }
-
-    /* print some text */
-    fprintf(f, "%s\n", text);
-    fclose(f);
 
     if(status < 0)
     {
@@ -423,18 +400,6 @@ static void *interface_thread(void *arg) /* {{{ */
 
     pthread_mutex_unlock(&interface_lock);
 
-    FILE *f = fopen("/tmp/ajb.txt", "w");
-    if (f == NULL)
-    {
-        printf("Error opening file!\n");
-        exit(1);
-    }
-
-    /* print some text */
-    const char *text = "Here";
-    fprintf(f, "%s\n", text);
-    fclose(f);
-
     status = read_event(sock, msg_handler);
     
     pthread_mutex_lock(&interface_lock);
@@ -465,18 +430,6 @@ static int start_thread(void) /* {{{ */
     pthread_mutex_unlock(&interface_lock);
     return (0);
   }
-
-  FILE *f = fopen("/tmp/startthread.txt", "w");
-  if (f == NULL)
-  {
-      printf("Error opening file!\n");
-      exit(1);
-  }
-
-  /* print some text */
-  const char *text = "Here";
-  fprintf(f, "%s\n", text);
-  fclose(f);
 
   interface_thread_loop = 1;
   interface_thread_error = 0;
@@ -524,19 +477,6 @@ static int stop_thread(void) /* {{{ */
 
 static int interface_init(void) /* {{{ */
 {
-  FILE *f = fopen("/tmp/interfaceinit.txt", "w");
-  if (f == NULL)
-  {
-      printf("Error opening file!\n");
-      exit(1);
-  }
-
-  /* print some text */
-  const char *text = "Here";
-  fprintf(f, "%s\n", text);
-  fputs("This is testing for fputs...\n", f);
-  fclose(f);
-
   if (interfacelist_head == NULL) {
     NOTICE("netlink2 plugin: No interfaces have been configured.");
     return (-1);
@@ -591,18 +531,6 @@ static int interface_config(const char *key, const char *value) /* {{{ */
     il->next = interfacelist_head;
     interfacelist_head = il;
 
-    FILE *f = fopen("/tmp/interface.txt", "w");
-    if (f == NULL)
-    {
-        printf("Error opening file!\n");
-        exit(1);
-    }
-
-    /* print some text */
-    const char *text = "Here";
-    fprintf(f, "%s\n", text);
-    fputs("This is testing for fputs...\n", f);
-    fclose(f);
   } else {
     return (-1);
   }
