@@ -73,6 +73,7 @@ static int interface_thread_error = 0;
 static pthread_t interface_thread_id;
 static pthread_mutex_t interface_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t interface_cond = PTHREAD_COND_INITIALIZER;
+static struct mnl_socket * sock;
 
 static const char *config_keys[] = {"Interface"};
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
@@ -294,6 +295,9 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
     //   return (-1);
     // }
 
+    if (nl == NULL)
+      return ret;
+
     status = mnl_socket_recvfrom(nl, buf, sizeof(buf));
 
     if(status < 0)
@@ -358,42 +362,6 @@ static void *interface_thread(void *arg) /* {{{ */
 {
   pthread_mutex_lock(&interface_lock);
 
-  struct mnl_socket * sock;// = mnl_socket_open(PF_NETLINK);
-
-  // if (sock == NULL)
-  // {
-  //     char errbuf[1024];
-  //     ERROR("netlink2 plugin: open netlink failed (socket open failed): %s",
-  //           sstrerror(errno, errbuf, sizeof(errbuf)));
-  //     interface_thread_error = 1;
-  //     pthread_mutex_unlock(&interface_lock);
-  //     return ((void *)-1);
-  // }
-
-  // int bind_status = mnl_socket_bind(sock, RTMGRP_LINK, 0);
-
-  // if (bind_status < 0)
-  // {
-  //     char errbuf[1024];
-  //     ERROR("netlink2 plugin: open netlink failed (socket bind failed): %s",
-  //           sstrerror(errno, errbuf, sizeof(errbuf)));
-  //     interface_thread_error = 1;
-  //     pthread_mutex_unlock(&interface_lock);
-  //     return ((void *)-1);
-  // }
-
-  sock = mnl_socket_open(NETLINK_ROUTE);   //PF_NETLINK
-  if (sock == NULL) {
-    ERROR("netlink2 plugin: interface_thread: mnl_socket_open failed.");
-    return ((void *)-1);
-  }
-
-  // RTMGRP_LINK
-  if (mnl_socket_bind(sock, RTMGRP_LINK, MNL_SOCKET_AUTOPID) < 0) {
-    ERROR("netlink2 plugin: interface_thread: mnl_socket_bind failed.");
-    return ((void *)-1);
-  }
-
   while (interface_thread_loop > 0) 
   {
     int status;
@@ -414,7 +382,6 @@ static void *interface_thread(void *arg) /* {{{ */
       break;
   } /* while (interface_thread_loop > 0) */
 
-  mnl_socket_close(sock);
   pthread_mutex_unlock(&interface_lock);
 
   return ((void *)0);
@@ -433,12 +400,31 @@ static int start_thread(void) /* {{{ */
 
   interface_thread_loop = 1;
   interface_thread_error = 0;
+
+  if (sock == NULL)
+  {
+    sock = mnl_socket_open(NETLINK_ROUTE);   //PF_NETLINK
+    if (sock == NULL) {
+      ERROR("netlink2 plugin: interface_thread: mnl_socket_open failed.");
+      pthread_mutex_unlock(&interface_lock);
+      return (-1);
+    }
+
+    // RTMGRP_LINK
+    if (mnl_socket_bind(sock, RTMGRP_LINK, MNL_SOCKET_AUTOPID) < 0) {
+      ERROR("netlink2 plugin: interface_thread: mnl_socket_bind failed.");
+      pthread_mutex_unlock(&interface_lock);
+      return (1);
+    }
+  }
+
   status = plugin_thread_create(&interface_thread_id, /* attr = */ NULL, interface_thread,
                                 /* arg = */ (void *)0, "netlink2");
   if (status != 0) {
     interface_thread_loop = 0;
     ERROR("netlink2 plugin: Starting thread failed.");
     pthread_mutex_unlock(&interface_lock);
+    mnl_socket_close(sock);
     return (-1);
   }
 
@@ -446,9 +432,12 @@ static int start_thread(void) /* {{{ */
   return (0);
 } /* }}} int start_thread */
 
-static int stop_thread(void) /* {{{ */
+static int stop_thread(int shutdown) /* {{{ */
 {
   int status;
+
+  if (sock != NULL)
+    mnl_socket_close(sock);
 
   pthread_mutex_lock(&interface_lock);
 
@@ -461,16 +450,42 @@ static int stop_thread(void) /* {{{ */
   pthread_cond_broadcast(&interface_cond);
   pthread_mutex_unlock(&interface_lock);
 
-  status = pthread_join(interface_thread_id, /* return = */ NULL);
-  if (status != 0) {
-    ERROR("netlink2 plugin: Stopping thread failed.");
-    status = -1;
+  if (shutdown == 1)
+  {
+    // Since the thread is blocking, calling pthread_join
+    // doesn't actually succeed in stopping it.  It will stick around
+    // until a NETLINK message is received on the socket (at which 
+    // it will realize that "interface_thread_loop" is 0 and will 
+    // break out of the read loop and be allowed to die).  This is
+    // fine when the process isn't supposed to be exiting, but in 
+    // the case of a process shutdown, we don't want to have an
+    // idle thread hanging around.  Calling pthread_cancel here in 
+    // the case of a shutdown is just assures that the thread is 
+    // gone and that the process has been fully terminated.
+
+    INFO("Canceling thread for process shutdown");
+
+    status = pthread_cancel(interface_thread_id);
+
+    if (status != 0)
+    {
+      ERROR("Unable to cancel thread: %d", status);
+      status = -1;
+    }
+  } else {
+    status = pthread_join(interface_thread_id, /* return = */ NULL);
+    if (status != 0) {
+      ERROR("netlink2 plugin: Stopping thread failed.");
+      status = -1;
+    }
   }
 
   pthread_mutex_lock(&interface_lock);
   memset(&interface_thread_id, 0, sizeof(interface_thread_id));
   interface_thread_error = 0;
   pthread_mutex_unlock(&interface_lock);
+
+  INFO("Finished requesting stop of thread");
 
   return (status);
 } /* }}} int stop_thread */
@@ -558,7 +573,7 @@ static int interface_read(void) /* {{{ */
   if (interface_thread_error != 0) {
     ERROR("netlink2 plugin: The interface thread had a problem. Restarting it.");
 
-    stop_thread();
+    stop_thread(0);
 
     for (interfacelist_t *il = interfacelist_head; il != NULL; il = il->next)
       il->status = 2;
@@ -591,7 +606,7 @@ static int interface_shutdown(void) /* {{{ */
   interfacelist_t *il;
 
   INFO("netlink2 plugin: Shutting down thread.");
-  if (stop_thread() < 0)
+  if (stop_thread(1) < 0)
     return (-1);
 
   il = interfacelist_head;
