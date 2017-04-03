@@ -201,17 +201,25 @@ static int netlink_link_state(struct nlmsghdr *msg)
         INFO("netlink2 plugin: Ignoring link state change for unmonitored interface: %s", dev);
         //printf("netlink2 plugin: Ignoring link state change for unmonitored interface: %s\n", dev);
       } else {
-        time_t current_time;
-        struct tm * time_info;
-        char timeString[9];  // space for "HH:MM:SS\0"
+        // time_t current_time;
+        // struct tm * time_info;
+        // char timeString[9];  // space for "HH:MM:SS\0"
 
-        time(&current_time);
-        time_info = localtime(&current_time);
+        // time(&current_time);
+        // time_info = localtime(&current_time);
 
-        strftime(timeString, sizeof(timeString), "%H:%M:%S", time_info);
+        // strftime(timeString, sizeof(timeString), "%H:%M:%S", time_info);
+
+        struct timeval tv;
+
+        gettimeofday(&tv, NULL);
+
+        unsigned long long millisecondsSinceEpoch =
+        (unsigned long long)(tv.tv_sec) * 1000 +
+        (unsigned long long)(tv.tv_usec) / 1000;
         
-        INFO("netlink2 plugin: Interface %s status is now %s", dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
-        printf("netlink2 plugin: (%s): Interface %s status is now %s\n", timeString, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
+        INFO("netlink2 plugin (%llu): Interface %s status is now %s", millisecondsSinceEpoch, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
+        printf("netlink2 plugin (%llu): Interface %s status is now %s\n", millisecondsSinceEpoch, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
 
         il->status = ((ifi->ifi_flags & IFF_RUNNING) ? 1 : 0);
       }
