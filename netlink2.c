@@ -41,12 +41,6 @@
 
 #include <linux/netlink.h>
 #include <linux/rtnetlink.h>
-//#include <netlink/object-api.h>
-//#include <netlink/object.h>
-//#include <netlink/socket.h>
-//#include <netlink/route/addr.h>
-//#include <netlink/route/rtnl.h>
-//#include <netlink/route/link.h>
 #include <libmnl/libmnl.h>
 
 #define MYPROTO NETLINK_ROUTE
@@ -84,43 +78,6 @@ static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
  * Private functions
  */
 
-// static int open_netlink()
-// {
-//     int sock = socket(AF_NETLINK,SOCK_RAW,MYPROTO);
-//     struct sockaddr_nl addr;
-
-//     memset((void *)&addr, 0, sizeof(addr));
-
-//     if (sock<0)
-//         return sock;
-
-//     addr.nl_family = AF_NETLINK;
-//     addr.nl_pid = getpid();
-//     addr.nl_groups = RTMGRP_LINK|RTMGRP_IPV4_IFADDR|RTMGRP_IPV6_IFADDR;
-
-//     if (bind(sock,(struct sockaddr *)&addr,sizeof(addr))<0)
-//         return -1;
-
-//     return sock;
-// }
-
-// static int open_netlink2(struct mnl_socket *nl)
-// {
-//   *nl = mnl_socket_open(NETLINK_ROUTE);
-  
-//   if (*nl == NULL) {
-//     ERROR("netlink2 plugin: open_netlink: mnl_socket_open failed.");
-//     return (-1);
-//   }
-
-//   if (mnl_socket_bind(nl, 0, MNL_SOCKET_AUTOPID) < 0) {
-//     ERROR("netlink2 plugin: open_netlink: mnl_socket_bind failed.");
-//     return (-1);
-//   }
-
-//   return (0);
-// }
-
 static int netlink_link_state(struct nlmsghdr *msg)
 {
     int retval;
@@ -129,54 +86,6 @@ static int netlink_link_state(struct nlmsghdr *msg)
     const char *dev = NULL;
 
     pthread_mutex_lock(&interface_lock);
-
-    // Get cache of interface names?
-    // struct nl_cache * cache;
-    // struct nl_handle * handle;
-
-    // handle = nl_handle_alloc();
-
-    // if (handle == NULL)
-    // {
-    //   char errbuf[1024];
-    //   ERROR("netlink2 plugin: failed to allocate link handle: %s",
-    //         sstrerror(errno, errbuf, sizeof(errbuf)));
-    //   interface_thread_error = 1;
-    //   retval = -1;
-    // } else {
-
-    //   cache = rtnl_link_alloc_cache(handle);
-
-    //   if (cache == NULL)
-    //   {
-    //     char errbuf[1024];
-    //     ERROR("netlink2 plugin: failed to allocate link cache: %s",
-    //           sstrerror(errno, errbuf, sizeof(errbuf)));
-    //     interface_thread_error = 1;
-    //     retval = -1;
-    //   } else {
-
-    //     char namebuf[IFNAMSIZ];
-    //     char *ifname = rtnl_link_i2name(cache, ifi->ifi_index, namebuf, IFNAMSIZ);
-
-    //     interfacelist_t *il;
-
-    //     for (il = interfacelist_head; il != NULL; il = il->next)
-    //       if (strcmp(ifname, il->interface) == 0)
-    //         break;
-
-    //     if (il == NULL) 
-    //       INFO("netlink2 plugin: Ignoring link state change for unmonitored interface: %s", ifname);
-    //     else 
-    //       il->status = ((ifi->ifi_flags & IFF_RUNNING) ? 1 : 0);
-
-    //     sfree(cache);
-
-    //     retval = 0;
-    //   }
-
-    //   //nl_handle_destroy(handle);
-    // }
 
     interfacelist_t *il;
 
@@ -205,16 +114,6 @@ static int netlink_link_state(struct nlmsghdr *msg)
         //printf("netlink2 plugin: Ignoring link state change for unmonitored interface: %s\n", dev);
       } else {
         uint32_t prev_status;
-
-        // time_t current_time;
-        // struct tm * time_info;
-        // char timeString[9];  // space for "HH:MM:SS\0"
-
-        // time(&current_time);
-        // time_info = localtime(&current_time);
-
-        // strftime(timeString, sizeof(timeString), "%H:%M:%S", time_info);
-
         struct timeval tv;
 
         gettimeofday(&tv, NULL);
@@ -233,7 +132,7 @@ static int netlink_link_state(struct nlmsghdr *msg)
         // store the previous status and set sent to zero
         if (il->status != prev_status)
         {
-          INFO("AJB DETECT: new status %d, old status %d, old prev status %d, old sent %d", il->status, prev_status, il->prev_status, il->sent);
+          //INFO("AJB DETECT: new status %d, old status %d, old prev status %d, old sent %d", il->status, prev_status, il->prev_status, il->sent);
           il->prev_status = prev_status;
           il->sent = 0;
         }
@@ -285,43 +184,22 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
     int status;
     int ret = 0;
     char buf[4096];
-    //struct iovec iov = { buf, sizeof buf };
-    //struct sockaddr_nl snl;
-    //struct msghdr msg = { (void*)&snl, sizeof snl, &iov, 1, NULL, 0, 0};
     struct nlmsghdr *h;
-    // struct rtgenmsg *rt;
-    // unsigned int seq;
-
-    // //unsigned int portid = mnl_socket_get_portid(nl);
-
-    // h = mnl_nlmsg_put_header(buf);
-    // h->nlmsg_type = RTM_GETLINK;
-    // h->nlmsg_flags = NLM_F_REQUEST | NLM_F_DUMP;
-    // h->nlmsg_seq = seq = time(NULL);
-    // rt = mnl_nlmsg_put_extra_header(h, sizeof(*rt));
-    // rt->rtgen_family = AF_PACKET;
-
-    // if (mnl_socket_sendto(nl, h, h->nlmsg_len) < 0) {
-    //   FILE *f = fopen("/tmp/senderror.txt", "w");
-    //   if (f == NULL)
-    //   {
-    //       printf("Error opening file!\n");
-    //       exit(1);
-    //   }
-
-    //   /* print some text */
-    //   const char *text = "netlink plugin: ir_read: rtnl_wilddump_request failed.";
-    //   fprintf(f, "%s\n", text);
-    //   fclose(f);
-
-    //   ERROR("netlink plugin: ir_read: rtnl_wilddump_request failed.");
-    //   return (-1);
-    // }
 
     if (nl == NULL)
       return ret;
 
     status = mnl_socket_recvfrom(nl, buf, sizeof(buf));
+
+    // struct timeval tv;
+
+    // gettimeofday(&tv, NULL);
+
+    // unsigned long long millisecondsSinceEpoch =
+    // (unsigned long long)(tv.tv_sec) * 1000 +
+    // (unsigned long long)(tv.tv_usec) / 1000;
+    
+    //INFO("AJB MESSAGE: something arrived at (%llu)", millisecondsSinceEpoch);
 
     if(status < 0)
     {
@@ -338,13 +216,6 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
     {
         printf("read_netlink: EOF\n");
     }
-
-    // while (ret > 0) {
-    //   ret = mnl_cb_run(buf, ret, seq, portid, link_filter_cb, NULL);
-    //   if (ret <= MNL_CB_STOP)
-    //     break;
-    //   ret = mnl_socket_recvfrom(nl, buf, sizeof(buf));
-    // }
 
     /* We need to handle more than one message per 'recvmsg' */
     for(h = (struct nlmsghdr *) buf; NLMSG_OK (h, (unsigned int)status); 
@@ -523,24 +394,6 @@ static int interface_init(void) /* {{{ */
   return (start_thread());
 } /* }}} int interface_init */
 
-// static int config_set_string(const char *name, /* {{{ */
-//                              char **var, const char *value) {
-//   char *tmp;
-
-//   tmp = strdup(value);
-//   if (tmp == NULL) {
-//     char errbuf[1024];
-//     ERROR("netlink2 plugin: Setting `%s' to `%s' failed: strdup failed: %s", name,
-//           value, sstrerror(errno, errbuf, sizeof(errbuf)));
-//     return (1);
-//   }
-
-//   if (*var != NULL)
-//     free(*var);
-//   *var = tmp;
-//   return (0);
-// } /* }}} int config_set_string */
-
 static int interface_config(const char *key, const char *value) /* {{{ */
 {
   if (strcasecmp(key, "Interface") == 0) {
@@ -626,12 +479,9 @@ static int interface_read(void) /* {{{ */
     prev_status = il->prev_status;
     sent = il->sent;
 
-    if (status == 0 && sent == 0)
-      INFO("AJB READ: status %d, prev_status %d, sent %d", status, prev_status, sent);
-
     if (status != prev_status && sent == 0)
     {
-      INFO("AJB READ: status %d, prev_status %d, sent %d", status, prev_status, sent);
+      //INFO("AJB READ: status %d, prev_status %d, sent %d", status, prev_status, sent);
 
       submit(il->interface, "gauge", status);
 
@@ -663,11 +513,6 @@ static int interface_shutdown(void) /* {{{ */
 
     il = il_next;
   }
-
-  // if (ping_data != NULL) {
-  //   free(ping_data);
-  //   ping_data = NULL;
-  // }
 
   return (0);
 } /* }}} int interface_shutdown */
