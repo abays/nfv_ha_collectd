@@ -58,6 +58,8 @@ struct interfacelist_s {
   char *interface;
 
   uint32_t status;
+  uint32_t prev_status;
+  uint32_t sent;
 
   struct interfacelist_s *next;
 };
@@ -187,6 +189,7 @@ static int netlink_link_state(struct nlmsghdr *msg)
       if (mnl_attr_validate(attr, MNL_TYPE_STRING) < 0) {
         ERROR("netlink2 plugin: netlink_link_state: IFLA_IFNAME mnl_attr_validate "
               "failed.");
+        pthread_mutex_unlock(&interface_lock);
         return MNL_CB_ERROR;
       }
 
@@ -201,6 +204,8 @@ static int netlink_link_state(struct nlmsghdr *msg)
         INFO("netlink2 plugin: Ignoring link state change for unmonitored interface: %s", dev);
         //printf("netlink2 plugin: Ignoring link state change for unmonitored interface: %s\n", dev);
       } else {
+        uint32_t prev_status;
+
         // time_t current_time;
         // struct tm * time_info;
         // char timeString[9];  // space for "HH:MM:SS\0"
@@ -221,7 +226,17 @@ static int netlink_link_state(struct nlmsghdr *msg)
         INFO("netlink2 plugin (%llu): Interface %s status is now %s", millisecondsSinceEpoch, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
         printf("netlink2 plugin (%llu): Interface %s status is now %s\n", millisecondsSinceEpoch, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
 
+        prev_status = il->status;
         il->status = ((ifi->ifi_flags & IFF_RUNNING) ? 1 : 0);
+
+        // If the new status is different than the previous status,
+        // store the previous status and set sent to zero
+        if (il->status != prev_status)
+        {
+          INFO("AJB DETECT: new status %d, old status %d, old prev status %d, old sent %d", il->status, prev_status, il->prev_status, il->sent);
+          il->prev_status = prev_status;
+          il->sent = 0;
+        }
       }
 
       // no need to loop again, we found the interface name
@@ -550,7 +565,9 @@ static int interface_config(const char *key, const char *value) /* {{{ */
     }
 
     il->interface = interface;
-    il->status = 2;
+    il->status = 2;  // "unknown"
+    il->prev_status = 2;
+    il->sent = 0;
     il->next = interfacelist_head;
     interfacelist_head = il;
 
@@ -584,7 +601,11 @@ static int interface_read(void) /* {{{ */
     stop_thread(0);
 
     for (interfacelist_t *il = interfacelist_head; il != NULL; il = il->next)
-      il->status = 2;
+    {
+      il->status = 2;  // signifies "unknown"
+      il->prev_status = 2;
+      il->sent = 0;
+    }
 
     start_thread();
 
@@ -594,16 +615,30 @@ static int interface_read(void) /* {{{ */
   for (interfacelist_t *il = interfacelist_head; il != NULL; il = il->next) /* {{{ */
   {
     uint32_t status;
+    uint32_t prev_status;
+    uint32_t sent;
 
     /* Locking here works, because the structure of the linked list is only
      * changed during configure and shutdown. */
     pthread_mutex_lock(&interface_lock);
 
     status = il->status;
+    prev_status = il->prev_status;
+    sent = il->sent;
+
+    if (status == 0 && sent == 0)
+      INFO("AJB READ: status %d, prev_status %d, sent %d", status, prev_status, sent);
+
+    if (status != prev_status && sent == 0)
+    {
+      INFO("AJB READ: status %d, prev_status %d, sent %d", status, prev_status, sent);
+
+      submit(il->interface, "gauge", status);
+
+      il->sent = 1;
+    }
 
     pthread_mutex_unlock(&interface_lock);
-
-    submit(il->interface, "gauge", status);
   } /* }}} for (il = interfacelist_head; il != NULL; il = il->next) */
 
   return (0);
