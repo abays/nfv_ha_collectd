@@ -441,7 +441,15 @@ static void submit(const char *interface, const char *type, /* {{{ */
   sstrncpy(vl.type_instance, interface, sizeof(vl.type_instance));
   sstrncpy(vl.type, type, sizeof(vl.type));
 
-  INFO("Dispatching state %d for interface %s", (int) value, interface);
+  struct timeval tv;
+
+  gettimeofday(&tv, NULL);
+
+  unsigned long long millisecondsSinceEpoch =
+  (unsigned long long)(tv.tv_sec) * 1000 +
+  (unsigned long long)(tv.tv_usec) / 1000;
+
+  INFO("netlink2 plugin (%llu): dispatching state %d for interface %s", millisecondsSinceEpoch, (int) value, interface);
 
   plugin_dispatch_values(&vl);
 } /* }}} void interface_submit */
