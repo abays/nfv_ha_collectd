@@ -36,6 +36,8 @@
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
+#include <netinet/in.h>
+#include <netdb.h>
 
 /*
  * Private data types
@@ -59,9 +61,11 @@ static int sysevent_thread_error = 0;
 static pthread_t sysevent_thread_id;
 static pthread_mutex_t sysevent_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t sysevent_cond = PTHREAD_COND_INITIALIZER;
+static int sock = -1;
 
-static const char *config_keys[] = {"Interface"};
-static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
+static char * listen_ip;
+static char * listen_port;
+static int listen_buffer_size;
 
 /*
  * Private functions
@@ -69,7 +73,9 @@ static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
 
 static void *sysevent_thread(void *arg) /* {{{ */
 {
+  INFO("sysevent plugin: waiting for lock");
   pthread_mutex_lock(&sysevent_lock);
+  INFO("sysevent plugin: acquired lock");
 
   while (sysevent_thread_loop > 0) 
   {
@@ -77,8 +83,25 @@ static void *sysevent_thread(void *arg) /* {{{ */
 
     pthread_mutex_unlock(&sysevent_lock);
 
+    INFO("sysevent plugin: listening for events");
+
     // read here
+    char buffer[1024];
+    struct sockaddr_storage src_addr;
+    socklen_t src_addr_len = sizeof(src_addr);
+    ssize_t count = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*) &src_addr, &src_addr_len);
+
+    if (count == -1) 
+    {
+        ERROR("%s",strerror(errno));
+    } else if (count==sizeof(buffer)) {
+        INFO("datagram too large for buffer: truncated");
+    } else {
+        INFO("sysevent plugin: received %s", buffer);
+    }
+
     status = 0;
+    sleep(1);
     
     pthread_mutex_lock(&sysevent_lock);
 
@@ -112,9 +135,45 @@ static int start_thread(void) /* {{{ */
   sysevent_thread_error = 0;
 
   // TODO: create socket if null
+  if (sock == -1)
+  {
+    const char* hostname="127.0.0.1";
+    const char* portname="6666";
+    struct addrinfo hints;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family=AF_UNSPEC;
+    hints.ai_socktype=SOCK_DGRAM;
+    hints.ai_protocol=0;
+    hints.ai_flags=AI_PASSIVE|AI_ADDRCONFIG;
+    struct addrinfo* res=0;
+    int err = getaddrinfo(hostname, portname, &hints, &res);
+    if (err != 0) 
+    {
+        ERROR("sysevent plugin: failed to resolve local socket address (err=%d)",err);
+        freeaddrinfo(res);
+        return (-1);
+    }
+
+    sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    if (sock == -1) 
+    {
+        ERROR("sysevent plugin: failed to open socket: %s", strerror(errno));
+        freeaddrinfo(res);
+        return (-1);
+    }
+
+    if (bind(sock, res->ai_addr, res->ai_addrlen) == -1) 
+    {
+        ERROR("sysevent plugin: failed to bind socket: %s", strerror(errno));
+        freeaddrinfo(res);
+        return (-1);
+    }
+  }
+
+  INFO("sysevent plugin: socket created and bound");
 
   status = plugin_thread_create(&sysevent_thread_id, /* attr = */ NULL, sysevent_thread,
-                                /* arg = */ (void *)0, "netlink2");
+                                /* arg = */ (void *)0, "sysevent");
   if (status != 0) {
     sysevent_thread_loop = 0;
     ERROR("sysevent plugin: Starting thread failed.");
@@ -132,6 +191,16 @@ static int stop_thread(int shutdown) /* {{{ */
   int status;
 
   // TODO: close socket if necessary
+
+  if (sock != -1)
+  {
+    status = close(sock);
+    if (status != 0)
+    {
+      ERROR("sysevent plugin: failed to close socket: %d", status);
+      return (-1);
+    }
+  }
 
   pthread_mutex_lock(&sysevent_lock);
 
@@ -191,9 +260,54 @@ static int sysevent_init(void) /* {{{ */
   return (start_thread());
 } /* }}} int sysevent_init */
 
-static int sysevent_config(const char *key, const char *value) /* {{{ */
+static int sysevent_config_add_listen(const oconfig_item_t *ci) /* {{{ */
+{
+  if (ci->values_num != 2 || ci->values[0].type != OCONFIG_TYPE_STRING ||
+      ci->values[1].type != OCONFIG_TYPE_STRING) {
+    ERROR("sysevent plugin: The `%s' config option needs "
+          "two string arguments (ip and port).",
+          ci->key);
+    return (-1);
+  }
+
+  listen_ip = strdup(ci->values[0].value.string);
+  listen_port = strdup(ci->values[1].value.string);
+
+  return (0);
+}
+
+static int sysevent_config_add_buffer_size(const oconfig_item_t *ci) /* {{{ */
+{
+  int tmp = 0;
+
+  if (cf_util_get_int(ci, &tmp) != 0)
+    return (-1);
+  else if ((tmp >= 1024) && (tmp <= 65535))
+    listen_buffer_size = tmp;
+  else {
+    WARNING(
+        "sysevent plugin: The `BufferSize' must be between 1024 and 65535.");
+    return (-1);
+  }
+
+  return (0);
+}
+
+static int sysevent_config(oconfig_item_t *ci) /* {{{ */
 {
   // TODO
+
+  for (int i = 0; i < ci->children_num; i++) {
+    oconfig_item_t *child = ci->children + i;
+
+    if (strcasecmp("Listen", child->key) == 0)
+      sysevent_config_add_listen(child);
+    else if (strcasecmp("BufferSize", child->key) == 0)
+      sysevent_config_add_buffer_size(child);
+    else {
+      WARNING("sysevent plugin: Option `%s' is not allowed here.", child->key);
+    }
+  }
 
   return (0);
 } /* }}} int sysevent_config */
@@ -208,6 +322,8 @@ static void submit(const char *something, const char *type, /* {{{ */
   sstrncpy(vl.plugin, "sysevent", sizeof(vl.plugin));
   sstrncpy(vl.type_instance, something, sizeof(vl.type_instance));
   sstrncpy(vl.type, type, sizeof(vl.type));
+
+  return ((void) 0);
 
   struct timeval tv;
 
@@ -257,7 +373,7 @@ static int sysevent_shutdown(void) /* {{{ */
 } /* }}} int sysevent_shutdown */
 
 void module_register(void) {
-  plugin_register_config("sysevent", sysevent_config, config_keys, config_keys_num);
+  plugin_register_complex_config("sysevent", sysevent_config);
   plugin_register_init("sysevent", sysevent_init);
   plugin_register_read("sysevent", sysevent_read);
   plugin_register_shutdown("sysevent", sysevent_shutdown);

@@ -357,13 +357,13 @@ static int stop_thread(int shutdown) /* {{{ */
     // the case of a shutdown is just assures that the thread is 
     // gone and that the process has been fully terminated.
 
-    INFO("Canceling thread for process shutdown");
+    INFO("netlink2 plugin: Canceling thread for process shutdown");
 
     status = pthread_cancel(interface_thread_id);
 
     if (status != 0)
     {
-      ERROR("Unable to cancel thread: %d", status);
+      ERROR("netlink2 plugin: Unable to cancel thread: %d", status);
       status = -1;
     }
   } else {
@@ -379,7 +379,7 @@ static int stop_thread(int shutdown) /* {{{ */
   interface_thread_error = 0;
   pthread_mutex_unlock(&interface_lock);
 
-  INFO("Finished requesting stop of thread");
+  INFO("netlink2 plugin: Finished requesting stop of thread");
 
   return (status);
 } /* }}} int stop_thread */
