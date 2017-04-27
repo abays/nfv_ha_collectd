@@ -86,20 +86,23 @@ static void *sysevent_thread(void *arg) /* {{{ */
     //INFO("sysevent plugin: listening for events");
 
     // read here
-    // char buffer[listen_buffer_size];
-    // struct sockaddr_storage src_addr;
-    // socklen_t src_addr_len = sizeof(src_addr);
-    // ssize_t count = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*) &src_addr, &src_addr_len);
-
-    ssize_t count = 1;
     char buffer[listen_buffer_size];
+    struct sockaddr_storage src_addr;
+    socklen_t src_addr_len = sizeof(src_addr);
+
+    memset(buffer, '\0', listen_buffer_size);
+
+    ssize_t count = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*) &src_addr, &src_addr_len);
+
+    // ssize_t count = 1;
+    // char buffer[listen_buffer_size];
 
     if (count == -1) 
     {
         ERROR("sysevent plugin: failed to receive data: %s", strerror(errno));
         status = -1;
     } else if (count >= sizeof(buffer)) {
-        //WARNING("datagram too large for buffer: truncated");
+        WARNING("datagram too large for buffer: truncated");
     } else {
         //INFO("sysevent plugin: received");
 
@@ -115,24 +118,18 @@ static void *sysevent_thread(void *arg) /* {{{ */
 
         if (next == ring.tail)
         {
-          //ERROR("sysevent plugin: ring buffer full");
-          //status = -1;
+          WARNING("sysevent plugin: ring buffer full");
         } else {
-          // if (ring.buffer[ring.head] != NULL)
-          //   free(ring.buffer[ring.head]);
-
-          sprintf(buffer, "blah%d", ring.head);
-
           INFO("sysevent plugin: writing %s", buffer);
 
-          ring.buffer[ring.head] = (buffer);
+          ring.buffer[ring.head] = strdup(buffer);
           ring.head = next;
         }
 
         pthread_mutex_unlock(&sysevent_lock);
     }
     
-    usleep(100000);
+    usleep(1000);
 
     pthread_mutex_lock(&sysevent_lock);
 
@@ -149,6 +146,7 @@ static void *sysevent_thread(void *arg) /* {{{ */
 
   pthread_mutex_unlock(&sysevent_lock);
 
+  // pthread_exit instead of return
   return ((void *)0);
 } /* }}} void *sysevent_thread */
 
@@ -166,11 +164,13 @@ static int start_thread(void) /* {{{ */
   sysevent_thread_loop = 1;
   sysevent_thread_error = 0;
 
+  INFO("sysevent plugin: starting thread");
+
   status = plugin_thread_create(&sysevent_thread_id, /* attr = */ NULL, sysevent_thread,
                                 /* arg = */ (void *)0, "sysevent");
   if (status != 0) {
     sysevent_thread_loop = 0;
-    ERROR("sysevent plugin: Starting thread failed.");
+    ERROR("sysevent plugin: starting thread failed.");
     pthread_mutex_unlock(&sysevent_lock);
     return (-1);
   }
@@ -284,7 +284,7 @@ static int sysevent_init(void) /* {{{ */
 
   INFO("sysevent plugin: socket created and bound");
 
-  return ((sysevent_thread_loop == 0 ? start_thread() : 0));
+  return (start_thread());
 } /* }}} int sysevent_init */
 
 static int sysevent_config_add_listen(const oconfig_item_t *ci) /* {{{ */
