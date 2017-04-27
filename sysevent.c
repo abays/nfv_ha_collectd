@@ -94,9 +94,6 @@ static void *sysevent_thread(void *arg) /* {{{ */
 
     ssize_t count = recvfrom(sock, buffer, sizeof(buffer), 0, (struct sockaddr*) &src_addr, &src_addr_len);
 
-    // ssize_t count = 1;
-    // char buffer[listen_buffer_size];
-
     if (count == -1) 
     {
         ERROR("sysevent plugin: failed to receive data: %s", strerror(errno));
@@ -122,7 +119,9 @@ static void *sysevent_thread(void *arg) /* {{{ */
         } else {
           INFO("sysevent plugin: writing %s", buffer);
 
-          ring.buffer[ring.head] = strdup(buffer);
+          // Copy the buffer contents up to listen_buffer_size, plus 1 
+          // to get the trailing \0
+          strncpy(ring.buffer[ring.head], buffer, listen_buffer_size + 1);
           ring.head = next;
         }
 
@@ -241,6 +240,11 @@ static int sysevent_init(void) /* {{{ */
   ring.tail = 0;
   ring.maxLen = buffer_length;
   ring.buffer = (char **)malloc(buffer_length * sizeof(char *));
+
+  for (int i = 0; i < buffer_length; i ++)
+  {
+    ring.buffer[i] = malloc(listen_buffer_size + 1);
+  }
 
   // TODO: create socket if null
   if (sock == -1)
@@ -392,8 +396,6 @@ static int sysevent_read(void) /* {{{ */
 
     stop_thread(0);
 
-    // TODO: clean up buffer data?
-
     start_thread();
 
     return (-1);
@@ -403,7 +405,7 @@ static int sysevent_read(void) /* {{{ */
 
   pthread_mutex_lock(&sysevent_lock);
 
-  if (ring.head != ring.tail)
+  while (ring.head != ring.tail)
   {
     int next = ring.tail + 1;
 
@@ -444,6 +446,12 @@ static int sysevent_shutdown(void) /* {{{ */
   // TODO: clean up data?
   free(listen_ip);
   free(listen_port);
+
+  for (int i = 0; i < buffer_length; i ++)
+  {
+    free(ring.buffer[i]);
+  }
+
   free(ring.buffer);
 
   return (0);
