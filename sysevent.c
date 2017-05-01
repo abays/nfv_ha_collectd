@@ -38,6 +38,8 @@
 #include <string.h>
 #include <netinet/in.h>
 #include <netdb.h>
+#include <yajl/yajl_tree.h>
+
 
 /*
  * Private data types
@@ -117,12 +119,34 @@ static void *sysevent_thread(void *arg) /* {{{ */
         {
           WARNING("sysevent plugin: ring buffer full");
         } else {
-          INFO("sysevent plugin: writing %s", buffer);
 
-          // Copy the buffer contents up to listen_buffer_size, plus 1 
-          // to get the trailing \0
-          strncpy(ring.buffer[ring.head], buffer, listen_buffer_size + 1);
-          ring.head = next;
+          yajl_val node;
+          char errbuf[1024];
+
+          errbuf[0] = 0;
+
+          node = yajl_tree_parse((const char *) buffer, errbuf, sizeof(errbuf));
+
+          if (node == NULL)
+          {
+            ERROR("sysevent plugin: fail to parse JSON: %s", errbuf);
+          } else {
+
+            char json_val[listen_buffer_size];
+            const char * path[] = { "@timestamp", (const char *) 0 };
+            yajl_val v = yajl_tree_get(node, path, yajl_t_string);
+
+            memset(json_val, '\0', listen_buffer_size);
+
+            sprintf(json_val, "%s%c", YAJL_GET_STRING(v), '\0');
+
+            INFO("sysevent plugin: writing %s", json_val);
+
+            strncpy(ring.buffer[ring.head], json_val, sizeof(json_val));
+            ring.head = next;
+          }
+
+          yajl_tree_free(node);
         }
 
         pthread_mutex_unlock(&sysevent_lock);
@@ -414,12 +438,12 @@ static int sysevent_read(void) /* {{{ */
 
     INFO("sysevent plugin: reading %s", ring.buffer[ring.tail]);
     ring.tail = next;
+
+    // TODO: publish (submit) new data
+    //submit("foo", "gauge", 1);
   }
 
   pthread_mutex_unlock(&sysevent_lock);
-
-  // TODO: publish (submit) new data (if any)
-  //submit("foo", "gauge", 1);
 
   return (0);
 } /* }}} int sysevent_read */
