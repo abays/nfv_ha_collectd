@@ -23,7 +23,7 @@ Collectd plugin for network interface service assurance monitoring
 1. cd ~/collectd
 2. vi collectd.conf
 3. Change the "Interface" key's associated value in the netlink2 section to target the interface you wish to monitor.  If desired, you can simply add multiple "Interface interface" lines to monitor multiple interfaces.
-4. Change the "Property" "metadata.broker.list" key's associated value in the write_kafka section to the IP and port of your Kafka broker.  You don't necessarily have to use this plugin if you're fine with just seeing events in the syslog and collectd log.
+4. Change the "Property" "metadata.broker.list" key's associated value in the write_kafka section to the IP and port of your Kafka broker.  You don't necessarily have to use this property if you're fine with just seeing events in the syslog and collectd log.
 
 **RUN**
 1. cd ~/collectd
