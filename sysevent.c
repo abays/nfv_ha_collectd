@@ -68,6 +68,10 @@ static char * listen_port;
 static int listen_buffer_size;
 static int buffer_length;
 
+static const char * rsyslog_keys[3] = {"@timestamp", "@source_host", "@message"};
+static const char * rsyslog_field_keys[4] = {"facility", "severity", "program", "processid"};
+
+
 /*
  * Private functions
  */
@@ -101,7 +105,7 @@ static void *sysevent_thread(void *arg) /* {{{ */
         ERROR("sysevent plugin: failed to receive data: %s", strerror(errno));
         status = -1;
     } else if (count >= sizeof(buffer)) {
-        WARNING("datagram too large for buffer: truncated");
+        WARNING("sysevent plugin: datagram too large for buffer: truncated");
     } else {
         //INFO("sysevent plugin: received");
 
@@ -132,21 +136,31 @@ static void *sysevent_thread(void *arg) /* {{{ */
             ERROR("sysevent plugin: fail to parse JSON: %s", errbuf);
           } else {
 
-            char json_val[listen_buffer_size];
-            const char * path[] = { "@timestamp", (const char *) 0 };
-            yajl_val v = yajl_tree_get(node, path, yajl_t_string);
+            // char json_val[listen_buffer_size];
+            // const char * path[] = { "@timestamp", (const char *) 0 };
+            // yajl_val v = yajl_tree_get(node, path, yajl_t_string);
 
-            memset(json_val, '\0', listen_buffer_size);
+            // memset(json_val, '\0', listen_buffer_size);
 
-            sprintf(json_val, "%s%c", YAJL_GET_STRING(v), '\0');
+            // sprintf(json_val, "%s%c", YAJL_GET_STRING(v), '\0');
 
-            INFO("sysevent plugin: writing %s", json_val);
+            INFO("sysevent plugin: writing %s", buffer);
 
-            strncpy(ring.buffer[ring.head], json_val, sizeof(json_val));
+            strncpy(ring.buffer[ring.head], buffer, sizeof(buffer));
             ring.head = next;
           }
 
           yajl_tree_free(node);
+
+          // Send notification for kafka to intercept
+
+          // notification_t n = {
+          //     NOTIF_WARNING, cdtime(), "", "", "sysevent", "", "", "", NULL};
+
+          // sstrncpy(n.host, hostname_g, sizeof(n.host));
+          // ssnprintf(n.message, sizeof(n.message), buffer);
+
+          // plugin_dispatch_notification(&n);
         }
 
         pthread_mutex_unlock(&sysevent_lock);
@@ -267,7 +281,7 @@ static int sysevent_init(void) /* {{{ */
 
   for (int i = 0; i < buffer_length; i ++)
   {
-    ring.buffer[i] = malloc(listen_buffer_size + 1);
+    ring.buffer[i] = malloc(listen_buffer_size);
   }
 
   // TODO: create socket if null
@@ -387,30 +401,74 @@ static int sysevent_config(oconfig_item_t *ci) /* {{{ */
 } /* }}} int sysevent_config */
 
 // TODO
-// static void submit(const char *something, const char *type, /* {{{ */
-//                    gauge_t value) {
-//   value_list_t vl = VALUE_LIST_INIT;
+static void submit(const char *something, const char *type, /* {{{ */
+                   gauge_t value) {
+  value_list_t vl = VALUE_LIST_INIT;
 
-//   vl.values = &(value_t){.gauge = value};
-//   vl.values_len = 1;
-//   sstrncpy(vl.plugin, "sysevent", sizeof(vl.plugin));
-//   sstrncpy(vl.type_instance, something, sizeof(vl.type_instance));
-//   sstrncpy(vl.type, type, sizeof(vl.type));
+  vl.values = &(value_t){.gauge = value};
+  vl.values_len = 1;
+  sstrncpy(vl.plugin, "sysevent", sizeof(vl.plugin));
+  //sstrncpy(vl.type_instance, something, sizeof(vl.type_instance));
+  sstrncpy(vl.type, type, sizeof(vl.type));
 
-//   return ((void) 0);
+  yajl_val node;
+  char errbuf[1024];
 
-//   struct timeval tv;
+  errbuf[0] = 0;
 
-//   gettimeofday(&tv, NULL);
+  node = yajl_tree_parse((const char *) something, errbuf, sizeof(errbuf));
 
-//   unsigned long long millisecondsSinceEpoch =
-//   (unsigned long long)(tv.tv_sec) * 1000 +
-//   (unsigned long long)(tv.tv_usec) / 1000;
+  // Create metadata to store JSON key-values
+  meta_data_t * meta = meta_data_create();
 
-//   INFO("sysevent plugin (%llu): dispatching something", millisecondsSinceEpoch);
+  size_t i = 0;
 
-//   plugin_dispatch_values(&vl);
-// } /* }}} void sysevent_submit */
+  for (i = 0; i < sizeof(rsyslog_keys) / sizeof(*rsyslog_keys); i ++)
+  {
+    char json_val[listen_buffer_size];
+    const char * key = (const char *) rsyslog_keys[i];
+    const char * path[] = { key, (const char *) 0 };
+    yajl_val v = yajl_tree_get(node, path, yajl_t_string);
+
+    memset(json_val, '\0', listen_buffer_size);
+
+    sprintf(json_val, "%s%c", YAJL_GET_STRING(v), '\0');
+
+    INFO("sysevent plugin: adding jsonval: %s", json_val);
+
+    meta_data_add_string(meta, rsyslog_keys[i], json_val);
+  }
+
+  for (i = 0; i < sizeof(rsyslog_field_keys) / sizeof(*rsyslog_field_keys); i ++)
+  {
+    char json_val[listen_buffer_size];
+    const char * key = (const char *) rsyslog_field_keys[i];
+    const char * path[] = { "@fields", key, (const char *) 0 };
+    yajl_val v = yajl_tree_get(node, path, yajl_t_string);
+
+    memset(json_val, '\0', listen_buffer_size);
+
+    sprintf(json_val, "%s%c", YAJL_GET_STRING(v), '\0');
+
+    INFO("sysevent plugin: adding jsonval: %s", json_val);
+
+    meta_data_add_string(meta, rsyslog_field_keys[i], json_val);
+  }
+
+  vl.meta = meta;
+
+  struct timeval tv;
+
+  gettimeofday(&tv, NULL);
+
+  unsigned long long millisecondsSinceEpoch =
+  (unsigned long long)(tv.tv_sec) * 1000 +
+  (unsigned long long)(tv.tv_usec) / 1000;
+
+  INFO("sysevent plugin (%llu): dispatching something", millisecondsSinceEpoch);
+
+  plugin_dispatch_values(&vl);
+} /* }}} void sysevent_submit */
 
 static int sysevent_read(void) /* {{{ */
 {
@@ -437,10 +495,11 @@ static int sysevent_read(void) /* {{{ */
       next = 0;
 
     INFO("sysevent plugin: reading %s", ring.buffer[ring.tail]);
-    ring.tail = next;
 
     // TODO: publish (submit) new data
-    //submit("foo", "gauge", 1);
+    submit(ring.buffer[ring.tail], "gauge", 1);
+
+    ring.tail = next;
   }
 
   pthread_mutex_unlock(&sysevent_lock);
