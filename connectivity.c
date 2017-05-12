@@ -1,5 +1,5 @@
 /**
- * collectd - src/netlink2.c
+ * collectd - src/connectivity.c
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
@@ -64,11 +64,11 @@ typedef struct interfacelist_s interfacelist_t;
  */
 static interfacelist_t *interfacelist_head = NULL;
 
-static int interface_thread_loop = 0;
-static int interface_thread_error = 0;
-static pthread_t interface_thread_id;
-static pthread_mutex_t interface_lock = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t interface_cond = PTHREAD_COND_INITIALIZER;
+static int connectivity_thread_loop = 0;
+static int connectivity_thread_error = 0;
+static pthread_t connectivity_thread_id;
+static pthread_mutex_t connectivity_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t connectivity_cond = PTHREAD_COND_INITIALIZER;
 static struct mnl_socket * sock;
 
 static const char *config_keys[] = {"Interface"};
@@ -85,7 +85,7 @@ static int netlink_link_state(struct nlmsghdr *msg)
     struct nlattr *attr;
     const char *dev = NULL;
 
-    pthread_mutex_lock(&interface_lock);
+    pthread_mutex_lock(&connectivity_lock);
 
     interfacelist_t *il;
 
@@ -96,9 +96,9 @@ static int netlink_link_state(struct nlmsghdr *msg)
         continue;
 
       if (mnl_attr_validate(attr, MNL_TYPE_STRING) < 0) {
-        ERROR("netlink2 plugin: netlink_link_state: IFLA_IFNAME mnl_attr_validate "
+        ERROR("connectivity plugin: netlink_link_state: IFLA_IFNAME mnl_attr_validate "
               "failed.");
-        pthread_mutex_unlock(&interface_lock);
+        pthread_mutex_unlock(&connectivity_lock);
         return MNL_CB_ERROR;
       }
 
@@ -110,8 +110,8 @@ static int netlink_link_state(struct nlmsghdr *msg)
 
       if (il == NULL) 
       {
-        INFO("netlink2 plugin: Ignoring link state change for unmonitored interface: %s", dev);
-        //printf("netlink2 plugin: Ignoring link state change for unmonitored interface: %s\n", dev);
+        INFO("connectivity plugin: Ignoring link state change for unmonitored interface: %s", dev);
+        //printf("connectivity plugin: Ignoring link state change for unmonitored interface: %s\n", dev);
       } else {
         uint32_t prev_status;
         struct timeval tv;
@@ -122,8 +122,8 @@ static int netlink_link_state(struct nlmsghdr *msg)
         (unsigned long long)(tv.tv_sec) * 1000 +
         (unsigned long long)(tv.tv_usec) / 1000;
         
-        INFO("netlink2 plugin (%llu): Interface %s status is now %s", millisecondsSinceEpoch, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
-        printf("netlink2 plugin (%llu): Interface %s status is now %s\n", millisecondsSinceEpoch, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
+        INFO("connectivity plugin (%llu): Interface %s status is now %s", millisecondsSinceEpoch, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
+        printf("connectivity plugin (%llu): Interface %s status is now %s\n", millisecondsSinceEpoch, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
 
         prev_status = il->status;
         il->status = ((ifi->ifi_flags & IFF_RUNNING) ? 1 : 0);
@@ -132,7 +132,6 @@ static int netlink_link_state(struct nlmsghdr *msg)
         // store the previous status and set sent to zero
         if (il->status != prev_status)
         {
-          //INFO("AJB DETECT: new status %d, old status %d, old prev status %d, old sent %d", il->status, prev_status, il->prev_status, il->sent);
           il->prev_status = prev_status;
           il->sent = 0;
         }
@@ -144,7 +143,7 @@ static int netlink_link_state(struct nlmsghdr *msg)
       break;
     }
 
-    pthread_mutex_unlock(&interface_lock);
+    pthread_mutex_unlock(&connectivity_lock);
 
     return retval;
 }
@@ -154,25 +153,20 @@ static int msg_handler(struct nlmsghdr *msg)
     switch (msg->nlmsg_type)
     {
         case RTM_NEWADDR:
-            printf("msg_handler: RTM_NEWADDR\n");
             break;
         case RTM_DELADDR:
-            printf("msg_handler: RTM_DELADDR\n");
             break;
         case RTM_NEWROUTE:
-            printf("msg_handler: RTM_NEWROUTE\n");
             break;
         case RTM_DELROUTE:
-            printf("msg_handler: RTM_DELROUTE\n");
             break;
         case RTM_NEWLINK:
             netlink_link_state(msg);
             break;
         case RTM_DELLINK:
-            printf("msg_handler: RTM_DELLINK\n");
             break;
         default:
-            printf("msg_handler: Unknown netlink nlmsg_type %d\n",
+            ERROR("connectivity plugin: msg_handler: Unknown netlink nlmsg_type %d\n",
                    msg->nlmsg_type);
             break;
     }
@@ -191,16 +185,6 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
 
     status = mnl_socket_recvfrom(nl, buf, sizeof(buf));
 
-    // struct timeval tv;
-
-    // gettimeofday(&tv, NULL);
-
-    // unsigned long long millisecondsSinceEpoch =
-    // (unsigned long long)(tv.tv_sec) * 1000 +
-    // (unsigned long long)(tv.tv_usec) / 1000;
-    
-    //INFO("AJB MESSAGE: something arrived at (%llu)", millisecondsSinceEpoch);
-
     if(status < 0)
     {
         /* Socket non-blocking so bail out once we have read everything */
@@ -208,13 +192,13 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
             return ret;
 
         /* Anything else is an error */
-        ERROR("read_netlink: Error mnl_socket_recvfrom: %d\n", status);
+        ERROR("connectivity plugin: read_event: Error mnl_socket_recvfrom: %d\n", status);
         return status;
     }
         
     if(status == 0)
     {
-        printf("read_netlink: EOF\n");
+        DEBUG("connectivity plugin: read_event: EOF\n");
     }
 
     /* We need to handle more than one message per 'recvmsg' */
@@ -228,7 +212,7 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
         /* Message is some kind of error */
         if (h->nlmsg_type == NLMSG_ERROR)
         {
-            printf("read_netlink: Message is an error - decode TBD\n");
+            ERROR("connectivity plugin: read_event: Message is an error - decode TBD\n");
             return -1; // Error
         }
 
@@ -238,13 +222,13 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
             ret = (*msg_handler)(h);
             if(ret < 0)
             {
-                printf("read_netlink: Message hander error %d\n", ret);
+                ERROR("connectivity plugin: read_event: Message handler error %d\n", ret);
                 return ret;
             }
         }
         else
         {
-            printf("read_netlink: Error NULL message handler\n");
+            ERROR("connectivity plugin: read_event: Error NULL message handler\n");
             return -1;
         }
     }
@@ -252,77 +236,77 @@ static int read_event(struct mnl_socket * nl, int (*msg_handler)(struct nlmsghdr
     return ret;
 }
 
-static void *interface_thread(void *arg) /* {{{ */
+static void *connectivity_thread(void *arg) /* {{{ */
 {
-  pthread_mutex_lock(&interface_lock);
+  pthread_mutex_lock(&connectivity_lock);
 
-  while (interface_thread_loop > 0) 
+  while (connectivity_thread_loop > 0) 
   {
     int status;
 
-    pthread_mutex_unlock(&interface_lock);
+    pthread_mutex_unlock(&connectivity_lock);
 
     status = read_event(sock, msg_handler);
     
-    pthread_mutex_lock(&interface_lock);
+    pthread_mutex_lock(&connectivity_lock);
 
     if (status < 0)
     {
-      interface_thread_error = 1;
+      connectivity_thread_error = 1;
       break;
     }
     
-    if (interface_thread_loop <= 0)
+    if (connectivity_thread_loop <= 0)
       break;
-  } /* while (interface_thread_loop > 0) */
+  } /* while (connectivity_thread_loop > 0) */
 
-  pthread_mutex_unlock(&interface_lock);
+  pthread_mutex_unlock(&connectivity_lock);
 
   return ((void *)0);
-} /* }}} void *interface_thread */
+} /* }}} void *connectivity_thread */
 
 static int start_thread(void) /* {{{ */
 {
   int status;
 
-  pthread_mutex_lock(&interface_lock);
+  pthread_mutex_lock(&connectivity_lock);
 
-  if (interface_thread_loop != 0) {
-    pthread_mutex_unlock(&interface_lock);
+  if (connectivity_thread_loop != 0) {
+    pthread_mutex_unlock(&connectivity_lock);
     return (0);
   }
 
-  interface_thread_loop = 1;
-  interface_thread_error = 0;
+  connectivity_thread_loop = 1;
+  connectivity_thread_error = 0;
 
   if (sock == NULL)
   {
     sock = mnl_socket_open(NETLINK_ROUTE);   //PF_NETLINK
     if (sock == NULL) {
-      ERROR("netlink2 plugin: interface_thread: mnl_socket_open failed.");
-      pthread_mutex_unlock(&interface_lock);
+      ERROR("connectivity plugin: connectivity_thread: mnl_socket_open failed.");
+      pthread_mutex_unlock(&connectivity_lock);
       return (-1);
     }
 
     // RTMGRP_LINK
     if (mnl_socket_bind(sock, RTMGRP_LINK, MNL_SOCKET_AUTOPID) < 0) {
-      ERROR("netlink2 plugin: interface_thread: mnl_socket_bind failed.");
-      pthread_mutex_unlock(&interface_lock);
+      ERROR("connectivity plugin: connectivity_thread: mnl_socket_bind failed.");
+      pthread_mutex_unlock(&connectivity_lock);
       return (1);
     }
   }
 
-  status = plugin_thread_create(&interface_thread_id, /* attr = */ NULL, interface_thread,
-                                /* arg = */ (void *)0, "netlink2");
+  status = plugin_thread_create(&connectivity_thread_id, /* attr = */ NULL, connectivity_thread,
+                                /* arg = */ (void *)0, "connectivity");
   if (status != 0) {
-    interface_thread_loop = 0;
-    ERROR("netlink2 plugin: Starting thread failed.");
-    pthread_mutex_unlock(&interface_lock);
+    connectivity_thread_loop = 0;
+    ERROR("connectivity plugin: Starting thread failed.");
+    pthread_mutex_unlock(&connectivity_lock);
     mnl_socket_close(sock);
     return (-1);
   }
 
-  pthread_mutex_unlock(&interface_lock);
+  pthread_mutex_unlock(&connectivity_lock);
   return (0);
 } /* }}} int start_thread */
 
@@ -333,23 +317,23 @@ static int stop_thread(int shutdown) /* {{{ */
   if (sock != NULL)
     mnl_socket_close(sock);
 
-  pthread_mutex_lock(&interface_lock);
+  pthread_mutex_lock(&connectivity_lock);
 
-  if (interface_thread_loop == 0) {
-    pthread_mutex_unlock(&interface_lock);
+  if (connectivity_thread_loop == 0) {
+    pthread_mutex_unlock(&connectivity_lock);
     return (-1);
   }
 
-  interface_thread_loop = 0;
-  pthread_cond_broadcast(&interface_cond);
-  pthread_mutex_unlock(&interface_lock);
+  connectivity_thread_loop = 0;
+  pthread_cond_broadcast(&connectivity_cond);
+  pthread_mutex_unlock(&connectivity_lock);
 
   if (shutdown == 1)
   {
     // Since the thread is blocking, calling pthread_join
     // doesn't actually succeed in stopping it.  It will stick around
     // until a NETLINK message is received on the socket (at which 
-    // it will realize that "interface_thread_loop" is 0 and will 
+    // it will realize that "connectivity_thread_loop" is 0 and will 
     // break out of the read loop and be allowed to die).  This is
     // fine when the process isn't supposed to be exiting, but in 
     // the case of a process shutdown, we don't want to have an
@@ -357,44 +341,44 @@ static int stop_thread(int shutdown) /* {{{ */
     // the case of a shutdown is just assures that the thread is 
     // gone and that the process has been fully terminated.
 
-    INFO("netlink2 plugin: Canceling thread for process shutdown");
+    INFO("connectivity plugin: Canceling thread for process shutdown");
 
-    status = pthread_cancel(interface_thread_id);
+    status = pthread_cancel(connectivity_thread_id);
 
     if (status != 0)
     {
-      ERROR("netlink2 plugin: Unable to cancel thread: %d", status);
+      ERROR("connectivity plugin: Unable to cancel thread: %d", status);
       status = -1;
     }
   } else {
-    status = pthread_join(interface_thread_id, /* return = */ NULL);
+    status = pthread_join(connectivity_thread_id, /* return = */ NULL);
     if (status != 0) {
-      ERROR("netlink2 plugin: Stopping thread failed.");
+      ERROR("connectivity plugin: Stopping thread failed.");
       status = -1;
     }
   }
 
-  pthread_mutex_lock(&interface_lock);
-  memset(&interface_thread_id, 0, sizeof(interface_thread_id));
-  interface_thread_error = 0;
-  pthread_mutex_unlock(&interface_lock);
+  pthread_mutex_lock(&connectivity_lock);
+  memset(&connectivity_thread_id, 0, sizeof(connectivity_thread_id));
+  connectivity_thread_error = 0;
+  pthread_mutex_unlock(&connectivity_lock);
 
-  INFO("netlink2 plugin: Finished requesting stop of thread");
+  INFO("connectivity plugin: Finished requesting stop of thread");
 
   return (status);
 } /* }}} int stop_thread */
 
-static int interface_init(void) /* {{{ */
+static int connectivity_init(void) /* {{{ */
 {
   if (interfacelist_head == NULL) {
-    NOTICE("netlink2 plugin: No interfaces have been configured.");
+    NOTICE("connectivity plugin: No interfaces have been configured.");
     return (-1);
   }
 
   return (start_thread());
-} /* }}} int interface_init */
+} /* }}} int connectivity_init */
 
-static int interface_config(const char *key, const char *value) /* {{{ */
+static int connectivity_config(const char *key, const char *value) /* {{{ */
 {
   if (strcasecmp(key, "Interface") == 0) {
     interfacelist_t *il;
@@ -403,7 +387,7 @@ static int interface_config(const char *key, const char *value) /* {{{ */
     il = malloc(sizeof(*il));
     if (il == NULL) {
       char errbuf[1024];
-      ERROR("netlink2 plugin: malloc failed: %s",
+      ERROR("connectivity plugin: malloc failed during connectivity_config: %s",
             sstrerror(errno, errbuf, sizeof(errbuf)));
       return (1);
     }
@@ -412,7 +396,7 @@ static int interface_config(const char *key, const char *value) /* {{{ */
     if (interface == NULL) {
       char errbuf[1024];
       sfree(il);
-      ERROR("link2 plugin: strdup failed: %s",
+      ERROR("connectivity plugin: strdup failed connectivity_config: %s",
             sstrerror(errno, errbuf, sizeof(errbuf)));
       return (1);
     }
@@ -429,7 +413,7 @@ static int interface_config(const char *key, const char *value) /* {{{ */
   }
 
   return (0);
-} /* }}} int interface_config */
+} /* }}} int connectivity_config */
 
 static void submit(const char *interface, const char *type, /* {{{ */
                    gauge_t value) {
@@ -437,7 +421,7 @@ static void submit(const char *interface, const char *type, /* {{{ */
 
   vl.values = &(value_t){.gauge = value};
   vl.values_len = 1;
-  sstrncpy(vl.plugin, "netlink2", sizeof(vl.plugin));
+  sstrncpy(vl.plugin, "connectivity", sizeof(vl.plugin));
   sstrncpy(vl.type_instance, interface, sizeof(vl.type_instance));
   sstrncpy(vl.type, type, sizeof(vl.type));
 
@@ -449,15 +433,15 @@ static void submit(const char *interface, const char *type, /* {{{ */
   (unsigned long long)(tv.tv_sec) * 1000 +
   (unsigned long long)(tv.tv_usec) / 1000;
 
-  INFO("netlink2 plugin (%llu): dispatching state %d for interface %s", millisecondsSinceEpoch, (int) value, interface);
+  INFO("connectivity plugin (%llu): dispatching state %d for interface %s", millisecondsSinceEpoch, (int) value, interface);
 
   plugin_dispatch_values(&vl);
 } /* }}} void interface_submit */
 
-static int interface_read(void) /* {{{ */
+static int connectivity_read(void) /* {{{ */
 {
-  if (interface_thread_error != 0) {
-    ERROR("netlink2 plugin: The interface thread had a problem. Restarting it.");
+  if (connectivity_thread_error != 0) {
+    ERROR("connectivity plugin: The interface thread had a problem. Restarting it.");
 
     stop_thread(0);
 
@@ -471,7 +455,7 @@ static int interface_read(void) /* {{{ */
     start_thread();
 
     return (-1);
-  } /* if (interface_thread_error != 0) */
+  } /* if (connectivity_thread_error != 0) */
 
   for (interfacelist_t *il = interfacelist_head; il != NULL; il = il->next) /* {{{ */
   {
@@ -481,7 +465,7 @@ static int interface_read(void) /* {{{ */
 
     /* Locking here works, because the structure of the linked list is only
      * changed during configure and shutdown. */
-    pthread_mutex_lock(&interface_lock);
+    pthread_mutex_lock(&connectivity_lock);
 
     status = il->status;
     prev_status = il->prev_status;
@@ -489,24 +473,22 @@ static int interface_read(void) /* {{{ */
 
     if (status != prev_status && sent == 0)
     {
-      //INFO("AJB READ: status %d, prev_status %d, sent %d", status, prev_status, sent);
-
       submit(il->interface, "gauge", status);
 
       il->sent = 1;
     }
 
-    pthread_mutex_unlock(&interface_lock);
+    pthread_mutex_unlock(&connectivity_lock);
   } /* }}} for (il = interfacelist_head; il != NULL; il = il->next) */
 
   return (0);
-} /* }}} int interface_read */
+} /* }}} int connectivity_read */
 
-static int interface_shutdown(void) /* {{{ */
+static int connectivity_shutdown(void) /* {{{ */
 {
   interfacelist_t *il;
 
-  INFO("netlink2 plugin: Shutting down thread.");
+  INFO("connectivity plugin: Shutting down thread.");
   if (stop_thread(1) < 0)
     return (-1);
 
@@ -523,11 +505,11 @@ static int interface_shutdown(void) /* {{{ */
   }
 
   return (0);
-} /* }}} int interface_shutdown */
+} /* }}} int connectivity_shutdown */
 
 void module_register(void) {
-  plugin_register_config("netlink2", interface_config, config_keys, config_keys_num);
-  plugin_register_init("netlink2", interface_init);
-  plugin_register_read("netlink2", interface_read);
-  plugin_register_shutdown("netlink2", interface_shutdown);
+  plugin_register_config("connectivity", connectivity_config, config_keys, config_keys_num);
+  plugin_register_init("connectivity", connectivity_init);
+  plugin_register_read("connectivity", connectivity_read);
+  plugin_register_shutdown("connectivity", connectivity_shutdown);
 } /* void module_register */
