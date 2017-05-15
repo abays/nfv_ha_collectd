@@ -23,7 +23,7 @@ Collectd plugins for NFV service assurance monitoring
 1. cd ~/collectd
 2. vi collectd.conf
 3. Change the "Interface" key's associated value in the connectivity plugin section to target the interface you wish to monitor.  If desired, you can simply add multiple "Interface interface" lines to monitor multiple interfaces.
-4. The "Listen" key's associated values in the sysevent plugin section should be set to the IP and port where you have configured rsyslog to publish data.
+4. The "Listen" key's associated values in the sysevent plugin section should be set to the IP and port where you have configured rsyslog to publish data.  See this repo's rsyslog.conf.example file for an example of rsyslog publishing to the local machine.
 5. The sysevent plugin uses a ringer buffer to write and read messages it receives from rsyslog.  The "BufferSize" configuration value indicates how many maximum KBs will be stored per message (if a given message overflows, the extra data is lost).  "BufferLength" sets the length of the ring buffer.
 6. Change the "Property" "metadata.broker.list" key's associated value in the write_kafka plugin section to the IP and port of your Kafka broker.  You don't necessarily have to use this plugin if you're fine with just seeing events in the syslog and collectd log.
 
