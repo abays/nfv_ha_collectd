@@ -78,7 +78,7 @@ static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
  * Private functions
  */
 
-static int netlink_link_state(struct nlmsghdr *msg)
+static int connectivity_link_state(struct nlmsghdr *msg)
 {
     int retval;
     struct ifinfomsg *ifi = mnl_nlmsg_get_payload(msg);
@@ -96,7 +96,7 @@ static int netlink_link_state(struct nlmsghdr *msg)
         continue;
 
       if (mnl_attr_validate(attr, MNL_TYPE_STRING) < 0) {
-        ERROR("connectivity plugin: netlink_link_state: IFLA_IFNAME mnl_attr_validate "
+        ERROR("connectivity plugin: connectivity_link_state: IFLA_IFNAME mnl_attr_validate "
               "failed.");
         pthread_mutex_unlock(&connectivity_lock);
         return MNL_CB_ERROR;
@@ -161,7 +161,7 @@ static int msg_handler(struct nlmsghdr *msg)
         case RTM_DELROUTE:
             break;
         case RTM_NEWLINK:
-            netlink_link_state(msg);
+            connectivity_link_state(msg);
             break;
         case RTM_DELLINK:
             break;

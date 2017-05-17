@@ -272,8 +272,6 @@ static int stop_thread(int shutdown) /* {{{ */
 
 static int sysevent_init(void) /* {{{ */
 {
-  // TODO: initialize ring buffer
-
   ring.head = 0;
   ring.tail = 0;
   ring.maxLen = buffer_length;
@@ -284,7 +282,6 @@ static int sysevent_init(void) /* {{{ */
     ring.buffer[i] = malloc(listen_buffer_size);
   }
 
-  // TODO: create socket if null
   if (sock == -1)
   {
     const char* hostname = listen_ip;
@@ -483,8 +480,6 @@ static int sysevent_read(void) /* {{{ */
     return (-1);
   } /* if (sysevent_thread_error != 0) */
 
-  // TODO: lock buffer and read all data available, then unlock
-
   pthread_mutex_lock(&sysevent_lock);
 
   while (ring.head != ring.tail)
@@ -496,7 +491,6 @@ static int sysevent_read(void) /* {{{ */
 
     INFO("sysevent plugin: reading %s", ring.buffer[ring.tail]);
 
-    // TODO: publish (submit) new data
     submit(ring.buffer[ring.tail], "gauge", 1);
 
     ring.tail = next;
@@ -526,7 +520,6 @@ static int sysevent_shutdown(void) /* {{{ */
       sock = -1;
   }
 
-  // TODO: clean up data?
   free(listen_ip);
   free(listen_port);
 
