@@ -7,17 +7,19 @@ Collectd plugins for NFV service assurance monitoring
 3. Move collectd.conf, configure.ac and Makefile.am from nfv_ha_collectd to collectd.  If you're concerned about wiping out changes in the (probably) more-up-to-date collectd repo's configure.ac and Makefile.am files, you can manually inject the plugin-related contents from the files in this repo into the files from the collectd repo.  Just "grep -i &lt;plugin name&gt;" against this repo's files and you'll get an idea how you'll need to update the corresponding collectd repo versions.
 4. Move connectivity.c to collectd/src
 5. yum install -y flex bison libtool libmnl libmnl-devel gcc-c++
-6. yum install -y ftp://195.220.108.108/linux/remi/enterprise/7/remi/x86_64/librdkafka-0.9.4-1.el7.remi.x86_64.rpm
-7. Clone https://github.com/edenhill/librdkafka.git
-8. cd ~/librdkafka
-9. ./configure
-10. make
-11. make install
-12. cd ~/collectd
-13. ./build.sh
-14. ./configure
-15. make
-16. make install
+6. yum install -y ftp://195.220.108.108/linux/centos/7.3.1611/os/x86_64/Packages/libmnl-devel-1.0.3-7.el7.x86_64.rpm
+7. yum install -y ftp://rpmfind.net/linux/centos/7.3.1611/os/x86_64/Packages/yajl-devel-2.0.4-4.el7.x86_64.rpm
+8. yum install -y ftp://195.220.108.108/linux/remi/enterprise/7/remi/x86_64/librdkafka-0.9.4-1.el7.remi.x86_64.rpm
+9. Clone https://github.com/edenhill/librdkafka.git
+10. cd ~/librdkafka
+11. ./configure
+12. make
+13. make install
+14. cd ~/collectd
+15. ./build.sh
+16. ./configure
+17. make
+18. make install
 
 **CONFIGURE**
 1. cd ~/collectd
