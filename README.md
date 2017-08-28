@@ -9,17 +9,13 @@ Collectd plugins for NFV service assurance monitoring
 5. yum install -y flex bison libtool libmnl libmnl-devel gcc-c++
 6. yum install -y ftp://195.220.108.108/linux/centos/7.3.1611/os/x86_64/Packages/libmnl-devel-1.0.3-7.el7.x86_64.rpm
 7. yum install -y ftp://rpmfind.net/linux/centos/7.3.1611/os/x86_64/Packages/yajl-devel-2.0.4-4.el7.x86_64.rpm
-8. yum install -y ftp://195.220.108.108/linux/remi/enterprise/7/remi/x86_64/librdkafka-0.9.4-1.el7.remi.x86_64.rpm
-9. Clone https://github.com/edenhill/librdkafka.git
-10. cd ~/librdkafka
-11. ./configure
-12. make
-13. make install
-14. cd ~/collectd
-15. ./build.sh
-16. ./configure
-17. make
-18. make install
+8. yum install -y ftp://195.220.108.108/linux/epel/7/x86_64/l/librdkafka-0.9.5-1.el7.x86_64.rpm
+9. yum install -y ftp://195.220.108.108/linux/epel/7/x86_64/l/librdkafka-devel-0.9.5-1.el7.x86_64.rpm
+10. cd ~/collectd
+11. ./build.sh
+12. ./configure
+13. make
+14. make install
 
 **CONFIGURE**
 1. cd ~/collectd
