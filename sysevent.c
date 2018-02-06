@@ -138,6 +138,7 @@ static int gen_message_payload(const char * msg, char * sev, int sev_num, char *
                                long long unsigned int timestamp, char **buf) {
   const unsigned char *buf2;
   yajl_gen g;
+  char json_str[DATA_MAX_NAME_LEN];
 
 #if !defined(HAVE_YAJL_V2)
   yajl_gen_config conf = {};
@@ -177,16 +178,12 @@ static int gen_message_payload(const char * msg, char * sev, int sev_num, char *
 
   event_id = event_id + 1;
   int event_id_len = sizeof(char) * sizeof(int) * 4 + 1;
-  char *event_id_str = malloc(event_id_len);
-  snprintf(event_id_str, event_id_len, "%d", event_id);
+  memset(json_str, '\0', DATA_MAX_NAME_LEN);
+  snprintf(json_str, event_id_len, "%d", event_id);
 
-  if (yajl_gen_number(g, event_id_str, strlen(event_id_str)) !=
-      yajl_gen_status_ok) {
-    sfree(event_id_str);
+  if (yajl_gen_number(g, json_str, strlen(json_str)) != yajl_gen_status_ok) {
     goto err;
   }
-
-  sfree(event_id_str);
 
   // eventName
   if (yajl_gen_string(g, (u_char *)SYSEVENT_EVENT_NAME_FIELD,
@@ -194,19 +191,15 @@ static int gen_message_payload(const char * msg, char * sev, int sev_num, char *
     goto err;
 
   int event_name_len = 0;
-  event_name_len = event_name_len + strlen(host);      // process name
+  event_name_len = event_name_len + strlen(host);      // host name
   event_name_len = event_name_len + 21; // "host", "syslog", "message", 3 spaces and null-terminator
-  char *event_name_str = malloc(event_name_len);
-  memset(event_name_str, '\0', event_name_len);
-  snprintf(event_name_str, event_name_len, "host %s syslog message", host);
+  memset(json_str, '\0', DATA_MAX_NAME_LEN);
+  snprintf(json_str, event_name_len, "host %s syslog message", host);
 
-  if (yajl_gen_string(g, (u_char *)event_name_str, strlen(event_name_str)) !=
+  if (yajl_gen_string(g, (u_char *)json_str, strlen(json_str)) !=
       yajl_gen_status_ok) {
-    sfree(event_name_str);
     goto err;
   }
-
-  sfree(event_name_str);
 
   // lastEpochMicrosec
   if (yajl_gen_string(g, (u_char *)SYSEVENT_LAST_EPOCH_MICROSEC_FIELD,
@@ -216,17 +209,13 @@ static int gen_message_payload(const char * msg, char * sev, int sev_num, char *
 
   int last_epoch_microsec_len =
       sizeof(char) * sizeof(long long unsigned int) * 4 + 1;
-  char *last_epoch_microsec_str = malloc(last_epoch_microsec_len);
-  snprintf(last_epoch_microsec_str, last_epoch_microsec_len, "%llu",
+  memset(json_str, '\0', DATA_MAX_NAME_LEN);
+  snprintf(json_str, last_epoch_microsec_len, "%llu",
            (long long unsigned int)CDTIME_T_TO_US(cdtime()));
 
-  if (yajl_gen_number(g, last_epoch_microsec_str,
-                      strlen(last_epoch_microsec_str)) != yajl_gen_status_ok) {
-    sfree(last_epoch_microsec_str);
+  if (yajl_gen_number(g, json_str, strlen(json_str)) != yajl_gen_status_ok) {
     goto err;
   }
-
-  sfree(last_epoch_microsec_str);
 
   // priority
   if (yajl_gen_string(g, (u_char *)SYSEVENT_PRIORITY_FIELD,
@@ -297,17 +286,13 @@ static int gen_message_payload(const char * msg, char * sev, int sev_num, char *
 
   int start_epoch_microsec_len =
       sizeof(char) * sizeof(long long unsigned int) * 4 + 1;
-  char *start_epoch_microsec_str = malloc(start_epoch_microsec_len);
-  snprintf(start_epoch_microsec_str, start_epoch_microsec_len, "%llu",
+  memset(json_str, '\0', DATA_MAX_NAME_LEN);
+  snprintf(json_str, start_epoch_microsec_len, "%llu",
            (long long unsigned int)timestamp);
 
-  if (yajl_gen_number(g, start_epoch_microsec_str,
-                      strlen(start_epoch_microsec_str)) != yajl_gen_status_ok) {
-    sfree(start_epoch_microsec_str);
+  if (yajl_gen_number(g, json_str, strlen(json_str)) != yajl_gen_status_ok) {
     goto err;
   }
-
-  sfree(start_epoch_microsec_str);
 
   // version
   if (yajl_gen_string(g, (u_char *)SYSEVENT_VERSION_FIELD,
