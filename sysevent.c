@@ -29,6 +29,7 @@
 #include "common.h"
 #include "plugin.h"
 #include "utils_complain.h"
+#include "utils_ignorelist.h"
 
 #include <asm/types.h>
 #include <errno.h>
@@ -50,8 +51,6 @@
 #if defined(YAJL_MAJOR) && (YAJL_MAJOR > 1)
 #define HAVE_YAJL_V2 1
 #endif
-
-#define SYSEVENT_REGEX_MATCHES 1
 
 #define SYSEVENT_DOMAIN_FIELD "domain"
 #define SYSEVENT_DOMAIN_VALUE "syslog"
@@ -99,17 +98,10 @@ typedef struct {
   long long unsigned int *timestamp;
 } circbuf_t;
 
-struct regexfilterlist_s {
-  char *regex_filter;
-  regex_t regex_filter_obj;
-
-  struct regexfilterlist_s *next;
-};
-typedef struct regexfilterlist_s regexfilterlist_t;
-
 /*
  * Private variables
  */
+static ignorelist_t *ignorelist = NULL;
 
 static int sysevent_thread_loop = 0;
 static int sysevent_thread_error = 0;
@@ -124,7 +116,7 @@ static char *listen_port;
 static int listen_buffer_size = 1024;
 static int buffer_length = 10;
 
-static regexfilterlist_t *regexfilterlist_head = NULL;
+static int monitor_all_messages = 1;
 
 static const char *rsyslog_keys[3] = {"@timestamp", "@source_host", "@message"};
 static const char *rsyslog_field_keys[5] = {"facility", "severity", "severity-num", "program",
@@ -194,7 +186,7 @@ static int gen_message_payload(const char * msg, char * sev, int sev_num, char *
   event_name_len = event_name_len + strlen(host);      // host name
   event_name_len = event_name_len + 21; // "host", "syslog", "message", 3 spaces and null-terminator
   memset(json_str, '\0', DATA_MAX_NAME_LEN);
-  snprintf(json_str, event_name_len, "host %s syslog message", host);
+  snprintf(json_str, event_name_len, "host %s rsyslog message", host);
 
   if (yajl_gen_string(g, (u_char *)json_str, strlen(json_str)) !=
       yajl_gen_status_ok) {
@@ -686,34 +678,22 @@ static int sysevent_config_add_regex_filter(const oconfig_item_t *ci) /* {{{ */
     return (-1);
   }
 
-  regexfilterlist_t *rl;
-  char *regexp_str;
-  regex_t regexp;
-  int status;
+#if HAVE_REGEX_H
+  if (ignorelist == NULL)
+    ignorelist = ignorelist_create(/* invert = */ 1);
 
-  regexp_str = strdup(ci->values[0].value.string);
-
-  status = regcomp(&regexp, regexp_str, REG_EXTENDED);
+  int status = ignorelist_add(ignorelist, ci->values[0].value.string);
 
   if (status != 0) {
-    ERROR("sysevent plugin: 'RegexFilter' invalid regular expression: %s",
-          regexp_str);
-    return (-1);
+    ERROR("sysevent plugin: invalid regular expression: %s", ci->values[0].value.string);
+    return (1);
   }
 
-  rl = malloc(sizeof(*rl));
-  if (rl == NULL) {
-    char errbuf[1024];
-    ERROR("sysevent plugin: malloc failed during "
-          "sysevent_config_add_regex_filter: %s",
-          sstrerror(errno, errbuf, sizeof(errbuf)));
-    return (-1);
-  }
-
-  rl->regex_filter = regexp_str;
-  rl->regex_filter_obj = regexp;
-  rl->next = regexfilterlist_head;
-  regexfilterlist_head = rl;
+  monitor_all_messages = 0;
+#else
+  WARNING("sysevent plugin: The plugin has been compiled without support "
+          "for the \"RegexFilter\" option.");
+#endif
 
   return (0);
 }
@@ -746,9 +726,6 @@ static void sysevent_dispatch_notification(
   notification_t n = {
       NOTIF_OKAY, cdtime(), "", "", "sysevent", "", "", "", NULL};
 
-  char hostname[1024];
-  gethostname(hostname, sizeof(hostname));
-
   if (node != NULL) {
     // If we have a parsed-JSON node to work with, use that
 
@@ -756,6 +733,7 @@ static void sysevent_dispatch_notification(
     char severity[listen_buffer_size];
     char sev_num_str[listen_buffer_size];
     char msg[listen_buffer_size];
+    char hostname_str[listen_buffer_size];
     int sev_num = -1;
 
     // msg
@@ -809,23 +787,23 @@ static void sysevent_dispatch_notification(
 
     if (hostname_v != NULL)
     {
-      memset(hostname, '\0', 1024);
-      snprintf(hostname, 1024, "%s%c", YAJL_GET_STRING(hostname_v), '\0');
+      memset(hostname_str, '\0', listen_buffer_size);
+      snprintf(hostname_str, listen_buffer_size, "%s%c", YAJL_GET_STRING(hostname_v), '\0');
     }
 
     gen_message_payload((msg_v != NULL ? msg : NULL), (severity_v != NULL ? severity : NULL), 
                         (sev_num_str_v != NULL ? sev_num : -1), (process_v != NULL ? process : NULL), 
-                        hostname, timestamp, &buf);
+                        (hostname_v != NULL ? hostname_str : hostname_g), timestamp, &buf);
   } else {
     // Data was not sent in JSON format, so just treat the whole log entry
     // as the message (and we'll be unable to acquire certain data, so the payload
     // generated below will be less informative)
     
-    gen_message_payload(message, NULL, -1, NULL, hostname,
+    gen_message_payload(message, NULL, -1, NULL, hostname_g,
                                timestamp, &buf);
   }
 
-  sstrncpy(n.host, hostname, sizeof(n.host));
+  sstrncpy(n.host, hostname_g, sizeof(n.host));
 
   notification_meta_t *m = calloc(1, sizeof(*m));
 
@@ -842,7 +820,7 @@ static void sysevent_dispatch_notification(
   m->type = NM_TYPE_STRING;
   n.meta = m;
 
-  INFO("sysevent plugin: notification message: %s",
+  DEBUG("sysevent plugin: notification message: %s",
         n.meta->nm_value.nm_string);
 
   DEBUG("sysevent plugin: dispatching message");
@@ -875,7 +853,6 @@ static int sysevent_read(void) /* {{{ */
     long long unsigned int timestamp;
     int is_match = 1;
     char *match_str = NULL;
-    regexfilterlist_t *rl = regexfilterlist_head;
     int next = ring.tail + 1;
     yajl_val node;
     char errbuf[1024];
@@ -897,7 +874,7 @@ static int sysevent_read(void) /* {{{ */
 
       // If we have any regex filters, we need to see if the message portion of
       // the data matches any of them (otherwise we're not interested)
-      if (regexfilterlist_head != NULL) {
+      if (monitor_all_messages == 0) {
         char json_val[listen_buffer_size];
         const char *path[] = {"@message", (const char *)0};
         yajl_val v = yajl_tree_get(node, path, yajl_t_string);
@@ -914,29 +891,18 @@ static int sysevent_read(void) /* {{{ */
 
       // If we have any regex filters, we need to see if the message data
       // matches any of them (otherwise we're not interested)
-      if (regexfilterlist_head != NULL)
+      if (monitor_all_messages == 0)
         match_str = ring.buffer[ring.tail];
     }
 
     // If we care about matching, do that comparison here
     if (match_str != NULL) {
-      is_match = 0;
+      is_match = 1;
 
-      while (rl != NULL) {
-        regmatch_t matches[SYSEVENT_REGEX_MATCHES];
-
-        is_match = (regexec(&rl->regex_filter_obj, match_str,
-                            SYSEVENT_REGEX_MATCHES, matches, 0) == 0
-                        ? 1
-                        : 0);
-
-        if (is_match == 1) {
-          DEBUG("sysevent plugin: regex filter match: %s", rl->regex_filter);
-          break;
-        }
-
-        rl = rl->next;
-      }
+      if (ignorelist_match(ignorelist, match_str) != 0)
+        is_match = 0;
+      else
+        DEBUG("sysevent plugin: regex filter match");
     }
 
     if (is_match == 1 && node != NULL)
@@ -958,7 +924,6 @@ static int sysevent_read(void) /* {{{ */
 static int sysevent_shutdown(void) /* {{{ */
 {
   int status;
-  regexfilterlist_t *rl;
 
   DEBUG("sysevent plugin: Shutting down thread.");
   if (stop_thread(1) < 0)
@@ -984,20 +949,6 @@ static int sysevent_shutdown(void) /* {{{ */
   free(ring.buffer);
   free(ring.timestamp);
 
-  rl = regexfilterlist_head;
-  while (rl != NULL) {
-    regexfilterlist_t *rl_next;
-
-    rl_next = rl->next;
-
-    free(rl->regex_filter);
-    regfree(&rl->regex_filter_obj);
-
-    sfree(rl);
-
-    rl = rl_next;
-  }
-
   return (0);
 } /* }}} int sysevent_shutdown */
 
@@ -1007,3 +958,4 @@ void module_register(void) {
   plugin_register_read("sysevent", sysevent_read);
   plugin_register_shutdown("sysevent", sysevent_shutdown);
 } /* void module_register */
+  
