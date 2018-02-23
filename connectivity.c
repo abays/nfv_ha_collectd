@@ -30,6 +30,7 @@
 #include "common.h"
 #include "plugin.h"
 #include "utils_complain.h"
+#include "utils_ignorelist.h"
 
 #include <asm/types.h>
 #include <errno.h>
@@ -56,6 +57,10 @@
 
 #define MYPROTO NETLINK_ROUTE
 
+#define LINK_STATE_DOWN 0
+#define LINK_STATE_UP 1
+#define LINK_STATE_UNKNOWN 2
+
 #define CONNECTIVITY_DOMAIN_FIELD "domain"
 #define CONNECTIVITY_DOMAIN_VALUE "stateChange"
 #define CONNECTIVITY_EVENT_ID_FIELD "eventId"
@@ -66,13 +71,13 @@
 #define CONNECTIVITY_PRIORITY_FIELD "priority"
 #define CONNECTIVITY_PRIORITY_VALUE "high"
 #define CONNECTIVITY_REPORTING_ENTITY_NAME_FIELD "reportingEntityName"
-#define CONNECTIVITY_REPORTING_ENTITY_NAME_VALUE "collectd procevent plugin"
+#define CONNECTIVITY_REPORTING_ENTITY_NAME_VALUE "collectd connectivity plugin"
 #define CONNECTIVITY_SEQUENCE_FIELD "sequence"
-#define CONNECTIVITY_SEQUENCE_VALUE "0"
+#define CONNECTIVITY_SEQUENCE_VALUE 0
 #define CONNECTIVITY_SOURCE_NAME_FIELD "sourceName"
 #define CONNECTIVITY_START_EPOCH_MICROSEC_FIELD "startEpochMicrosec"
 #define CONNECTIVITY_VERSION_FIELD "version"
-#define CONNECTIVITY_VERSION_VALUE "1.0"
+#define CONNECTIVITY_VERSION_VALUE 1.0
 
 #define CONNECTIVITY_NEW_STATE_FIELD "newState"
 #define CONNECTIVITY_NEW_STATE_FIELD_DOWN_VALUE "outOfService"
@@ -81,14 +86,15 @@
 #define CONNECTIVITY_OLD_STATE_FIELD_DOWN_VALUE "outOfService"
 #define CONNECTIVITY_OLD_STATE_FIELD_UP_VALUE "inService"
 #define CONNECTIVITY_STATE_CHANGE_FIELDS_FIELD "stateChangeFields"
-#define CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_FIELD "stateChangeFieldsVersion"
-#define CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_VALUE "1.0"
+#define CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_FIELD                         \
+  "stateChangeFieldsVersion"
+#define CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_VALUE 1.0
 #define CONNECTIVITY_STATE_INTERFACE_FIELD "stateInterface"
 
 /*
  * Private data types
  */
-struct interfacelist_s {
+struct interface_list_s {
   char *interface;
 
   uint32_t status;
@@ -96,14 +102,17 @@ struct interfacelist_s {
   uint32_t sent;
   long long unsigned int timestamp;
 
-  struct interfacelist_s *next;
+  struct interface_list_s *next;
 };
-typedef struct interfacelist_s interfacelist_t;
+typedef struct interface_list_s interface_list_t;
 
 /*
  * Private variables
  */
-static interfacelist_t *interfacelist_head = NULL;
+static ignorelist_t *ignorelist = NULL;
+
+static interface_list_t *interface_list_head = NULL;
+static int monitor_all_interfaces = 1;
 
 static int connectivity_thread_loop = 0;
 static int connectivity_thread_error = 0;
@@ -111,7 +120,7 @@ static pthread_t connectivity_thread_id;
 static pthread_mutex_t connectivity_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t connectivity_cond = PTHREAD_COND_INITIALIZER;
 static struct mnl_socket *sock;
-static int event_id = 0;
+static unsigned int event_id = 0;
 
 static const char *config_keys[] = {"Interface"};
 static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
@@ -120,254 +129,168 @@ static int config_keys_num = STATIC_ARRAY_SIZE(config_keys);
  * Private functions
  */
 
-static int gen_message_payload(int state, const char *interface,
-                               long long unsigned int timestamp, char **buf) {
-  const unsigned char *buf2;
-  yajl_gen g;
-
-#if !defined(HAVE_YAJL_V2)
-  yajl_gen_config conf = {};
-
-  conf.beautify = 0;
-#endif
-
-#if HAVE_YAJL_V2
-  size_t len;
-  g = yajl_gen_alloc(NULL);
-  yajl_gen_config(g, yajl_gen_beautify, 0);
-#else
-  unsigned int len;
-  g = yajl_gen_alloc(&conf, NULL);
-#endif
-
-  yajl_gen_clear(g);
+static int gen_message_payload(int state, int old_state, const char *interface,
+                               long long unsigned int timestamp, notification_t *n) {
+  char json_str[DATA_MAX_NAME_LEN];
+  notification_meta_t *header;
+  notification_meta_t *domain;
 
   // *** BEGIN common event header ***
 
-  if (yajl_gen_map_open(g) != yajl_gen_status_ok)
+  // Add the object as "ves" to the notification's meta (the notification's meta
+  // will be created by this call, and it will be the VES header)
+  if (plugin_notification_meta_add_meta(n, "ves") != 0)
     goto err;
+
+  // Now populate the VES header
+  header = n->meta;
 
   // domain
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_DOMAIN_FIELD,
-                      strlen(CONNECTIVITY_DOMAIN_FIELD)) != yajl_gen_status_ok)
-    goto err;
-
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_DOMAIN_VALUE,
-                      strlen(CONNECTIVITY_DOMAIN_VALUE)) != yajl_gen_status_ok)
+  if (plugin_notification_meta_append_string(header, CONNECTIVITY_DOMAIN_FIELD,
+                                        CONNECTIVITY_DOMAIN_VALUE) != 0)
     goto err;
 
   // eventId
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_EVENT_ID_FIELD,
-                      strlen(CONNECTIVITY_EVENT_ID_FIELD)) != yajl_gen_status_ok)
-    goto err;
-
   event_id = event_id + 1;
-  int event_id_len = sizeof(char) * sizeof(int) * 4 + 1;
-  char *event_id_str = malloc(event_id_len);
-  snprintf(event_id_str, event_id_len, "%d", event_id);
 
-  if (yajl_gen_number(g, event_id_str, strlen(event_id_str)) !=
-      yajl_gen_status_ok) {
-    sfree(event_id_str);
+  if (plugin_notification_meta_append_unsigned_int(header, CONNECTIVITY_EVENT_ID_FIELD,
+                                        event_id) != 0)
     goto err;
-  }
-
-  sfree(event_id_str);
 
   // eventName
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_EVENT_NAME_FIELD,
-                      strlen(CONNECTIVITY_EVENT_NAME_FIELD)) != yajl_gen_status_ok)
-    goto err;
-
   int event_name_len = 0;
-  event_name_len = event_name_len + strlen(interface);      // interface name
+  event_name_len = event_name_len + strlen(interface);    // interface name
   event_name_len = event_name_len + (state == 0 ? 4 : 2); // "down" or "up"
-  event_name_len = event_name_len +
-                   12; // "interface", 2 spaces and null-terminator
-  char *event_name_str = malloc(event_name_len);
-  memset(event_name_str, '\0', event_name_len);
-  snprintf(event_name_str, event_name_len, "interface %s %s", interface,
+  event_name_len =
+      event_name_len + 12; // "interface", 2 spaces and null-terminator
+  memset(json_str, '\0', DATA_MAX_NAME_LEN);
+  snprintf(json_str, event_name_len, "interface %s %s", interface,
            (state == 0 ? CONNECTIVITY_EVENT_NAME_DOWN_VALUE
                        : CONNECTIVITY_EVENT_NAME_UP_VALUE));
 
-  if (yajl_gen_string(g, (u_char *)event_name_str, strlen(event_name_str)) !=
-      yajl_gen_status_ok) {
-    sfree(event_name_str);
+  if (plugin_notification_meta_append_string(header, CONNECTIVITY_EVENT_NAME_FIELD,
+                                        json_str) != 0)
     goto err;
-  }
-
-  sfree(event_name_str);
 
   // lastEpochMicrosec
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_LAST_EPOCH_MICROSEC_FIELD,
-                      strlen(CONNECTIVITY_LAST_EPOCH_MICROSEC_FIELD)) !=
-      yajl_gen_status_ok)
+  if (plugin_notification_meta_append_unsigned_int(header, CONNECTIVITY_LAST_EPOCH_MICROSEC_FIELD,
+                                        (long long unsigned int)CDTIME_T_TO_US(cdtime())) != 0)
     goto err;
-
-  int last_epoch_microsec_len =
-      sizeof(char) * sizeof(long long unsigned int) * 4 + 1;
-  char *last_epoch_microsec_str = malloc(last_epoch_microsec_len);
-  snprintf(last_epoch_microsec_str, last_epoch_microsec_len, "%llu",
-           (long long unsigned int)CDTIME_T_TO_US(cdtime()));
-
-  if (yajl_gen_number(g, last_epoch_microsec_str,
-                      strlen(last_epoch_microsec_str)) != yajl_gen_status_ok) {
-    sfree(last_epoch_microsec_str);
-    goto err;
-  }
-
-  sfree(last_epoch_microsec_str);
 
   // priority
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_PRIORITY_FIELD,
-                      strlen(CONNECTIVITY_PRIORITY_FIELD)) != yajl_gen_status_ok)
-    goto err;
-
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_PRIORITY_VALUE,
-                      strlen(CONNECTIVITY_PRIORITY_VALUE)) != yajl_gen_status_ok)
+  if (plugin_notification_meta_append_string(header, CONNECTIVITY_PRIORITY_FIELD,
+                                        CONNECTIVITY_PRIORITY_VALUE) != 0)
     goto err;
 
   // reportingEntityName
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_REPORTING_ENTITY_NAME_FIELD,
-                      strlen(CONNECTIVITY_REPORTING_ENTITY_NAME_FIELD)) !=
-      yajl_gen_status_ok)
-    goto err;
-
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_REPORTING_ENTITY_NAME_VALUE,
-                      strlen(CONNECTIVITY_REPORTING_ENTITY_NAME_VALUE)) !=
-      yajl_gen_status_ok)
-    goto err;
+  if (plugin_notification_meta_append_string(header, CONNECTIVITY_REPORTING_ENTITY_NAME_FIELD,
+                                        CONNECTIVITY_REPORTING_ENTITY_NAME_VALUE) != 0)
 
   // sequence
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_SEQUENCE_FIELD,
-                      strlen(CONNECTIVITY_SEQUENCE_FIELD)) != yajl_gen_status_ok)
-    goto err;
-
-  if (yajl_gen_number(g, CONNECTIVITY_SEQUENCE_VALUE,
-                      strlen(CONNECTIVITY_SEQUENCE_VALUE)) != yajl_gen_status_ok)
+  if (plugin_notification_meta_append_unsigned_int(header, CONNECTIVITY_SEQUENCE_FIELD,
+                                        (unsigned int) CONNECTIVITY_SEQUENCE_VALUE) != 0)
     goto err;
 
   // sourceName
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_SOURCE_NAME_FIELD,
-                      strlen(CONNECTIVITY_SOURCE_NAME_FIELD)) !=
-      yajl_gen_status_ok)
-    goto err;
-
-  if (yajl_gen_string(g, (u_char *)interface, strlen(interface)) !=
-      yajl_gen_status_ok)
-    goto err;
+  if (plugin_notification_meta_append_string(header, CONNECTIVITY_SOURCE_NAME_FIELD,
+                                        interface) != 0)
 
   // startEpochMicrosec
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_START_EPOCH_MICROSEC_FIELD,
-                      strlen(CONNECTIVITY_START_EPOCH_MICROSEC_FIELD)) !=
-      yajl_gen_status_ok)
+  if (plugin_notification_meta_append_unsigned_int(header, CONNECTIVITY_START_EPOCH_MICROSEC_FIELD,
+                                        (long long unsigned int)timestamp) != 0)
     goto err;
-
-  int start_epoch_microsec_len =
-      sizeof(char) * sizeof(long long unsigned int) * 4 + 1;
-  char *start_epoch_microsec_str = malloc(start_epoch_microsec_len);
-  snprintf(start_epoch_microsec_str, start_epoch_microsec_len, "%llu",
-           (long long unsigned int)timestamp);
-
-  if (yajl_gen_number(g, start_epoch_microsec_str,
-                      strlen(start_epoch_microsec_str)) != yajl_gen_status_ok) {
-    sfree(start_epoch_microsec_str);
-    goto err;
-  }
-
-  sfree(start_epoch_microsec_str);
 
   // version
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_VERSION_FIELD,
-                      strlen(CONNECTIVITY_VERSION_FIELD)) != yajl_gen_status_ok)
-    goto err;
-
-  if (yajl_gen_number(g, CONNECTIVITY_VERSION_VALUE,
-                      strlen(CONNECTIVITY_VERSION_VALUE)) != yajl_gen_status_ok)
+  if (plugin_notification_meta_append_double(header, CONNECTIVITY_VERSION_FIELD,
+                                        CONNECTIVITY_VERSION_VALUE) != 0)
     goto err;
 
   // *** END common event header ***
 
   // *** BEGIN state change fields ***
 
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_STATE_CHANGE_FIELDS_FIELD,
-                      strlen(CONNECTIVITY_STATE_CHANGE_FIELDS_FIELD)) !=
-      yajl_gen_status_ok)
+  // Append a metadata NM_TYPE_META object to header, with key as "stateChangeFields",
+  // and find it by traversing metadata linked list (as it will be located at the end).
+  // We will then append children data to it.
+
+  if (plugin_notification_meta_append_meta(header, CONNECTIVITY_STATE_CHANGE_FIELDS_FIELD) != 0)
     goto err;
 
-  if (yajl_gen_map_open(g) != yajl_gen_status_ok)
-    goto err;
+  domain = header;
+  while ((domain != NULL) && (domain->next != NULL))
+    domain = domain->next;
 
   // newState
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_NEW_STATE_FIELD,
-                      strlen(CONNECTIVITY_NEW_STATE_FIELD)) !=
-      yajl_gen_status_ok)
+  if (plugin_notification_meta_append_string(domain, CONNECTIVITY_NEW_STATE_FIELD,
+                                        (state == 0 ? CONNECTIVITY_NEW_STATE_FIELD_DOWN_VALUE
+                  : CONNECTIVITY_NEW_STATE_FIELD_UP_VALUE)) != 0)
     goto err;
 
-  int new_state_len = (state == 0 ? strlen(CONNECTIVITY_NEW_STATE_FIELD_DOWN_VALUE) : strlen(CONNECTIVITY_NEW_STATE_FIELD_UP_VALUE));
-
-  if (yajl_gen_string(g, (u_char *)(state == 0 ? CONNECTIVITY_NEW_STATE_FIELD_DOWN_VALUE : CONNECTIVITY_NEW_STATE_FIELD_UP_VALUE),
-                      new_state_len) !=
-      yajl_gen_status_ok)
-    goto err;
 
   // oldState
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_OLD_STATE_FIELD,
-                      strlen(CONNECTIVITY_OLD_STATE_FIELD)) !=
-      yajl_gen_status_ok)
-    goto err;
-
-  int old_state_len = (state == 0 ? strlen(CONNECTIVITY_OLD_STATE_FIELD_DOWN_VALUE) : strlen(CONNECTIVITY_OLD_STATE_FIELD_UP_VALUE));
-
-  if (yajl_gen_string(g, (u_char *)(state == 0 ? CONNECTIVITY_OLD_STATE_FIELD_DOWN_VALUE : CONNECTIVITY_OLD_STATE_FIELD_UP_VALUE),
-                      old_state_len) !=
-      yajl_gen_status_ok)
+  if (plugin_notification_meta_append_string(domain, CONNECTIVITY_OLD_STATE_FIELD,
+                                        (old_state == 0 ? CONNECTIVITY_OLD_STATE_FIELD_DOWN_VALUE
+                  : CONNECTIVITY_OLD_STATE_FIELD_UP_VALUE)) != 0)
     goto err;
 
   // stateChangeFieldsVersion
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_FIELD,
-                      strlen(CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_FIELD)) !=
-      yajl_gen_status_ok)
-    goto err;
-
-  if (yajl_gen_number(g, CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_VALUE,
-                      strlen(CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_VALUE)) !=
-      yajl_gen_status_ok)
+  if (plugin_notification_meta_append_double(domain, CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_FIELD,
+                                        CONNECTIVITY_STATE_CHANGE_FIELDS_VERSION_VALUE) != 0)
     goto err;
 
   // stateInterface
-  if (yajl_gen_string(g, (u_char *)CONNECTIVITY_STATE_INTERFACE_FIELD,
-                      strlen(CONNECTIVITY_STATE_INTERFACE_FIELD)) !=
-      yajl_gen_status_ok)
+  if (plugin_notification_meta_append_string(domain, CONNECTIVITY_STATE_INTERFACE_FIELD,
+                                        interface) != 0)
     goto err;
 
-  if (yajl_gen_string(g, (u_char *)interface, strlen(interface)) !=
-      yajl_gen_status_ok)
-    goto err;
-
-  if (yajl_gen_map_close(g) != yajl_gen_status_ok)
+  if (plugin_notification_meta_append_meta_end(domain) != 0)
     goto err;
 
   // *** END state change fields ***
 
-  if (yajl_gen_map_close(g) != yajl_gen_status_ok)
+  if (plugin_notification_meta_append_meta_end(header) != 0)
     goto err;
-
-  if (yajl_gen_get_buf(g, &buf2, &len) != yajl_gen_status_ok)
-    goto err;
-
-  *buf = malloc(strlen((char *)buf2) + 1);
-
-  sstrncpy(*buf, (char *)buf2, strlen((char *)buf2) + 1);
-
-  yajl_gen_free(g);
 
   return 0;
 
 err:
-  yajl_gen_free(g);
   ERROR("connectivity plugin: gen_message_payload failed to generate JSON");
   return -1;
+}
+
+static interface_list_t *add_interface(const char *interface, int status,
+                                       int prev_status) {
+  interface_list_t *il;
+  char *interface2;
+
+  il = malloc(sizeof(*il));
+  if (il == NULL) {
+    char errbuf[1024];
+    ERROR("connectivity plugin: malloc failed during add_interface: %s",
+          sstrerror(errno, errbuf, sizeof(errbuf)));
+    return NULL;
+  }
+
+  interface2 = strdup(interface);
+  if (interface2 == NULL) {
+    char errbuf[1024];
+    sfree(il);
+    ERROR("connectivity plugin: strdup failed during add_interface: %s",
+          sstrerror(errno, errbuf, sizeof(errbuf)));
+    return NULL;
+  }
+
+  il->interface = interface2;
+  il->status = status;
+  il->prev_status = prev_status;
+  il->timestamp = (long long unsigned int)CDTIME_T_TO_US(cdtime());
+  il->sent = 0;
+  il->next = interface_list_head;
+  interface_list_head = il;
+
+  DEBUG("connectivity plugin: added interface %s", interface2);
+
+  return il;
 }
 
 static int connectivity_link_state(struct nlmsghdr *msg) {
@@ -378,7 +301,7 @@ static int connectivity_link_state(struct nlmsghdr *msg) {
 
   pthread_mutex_lock(&connectivity_lock);
 
-  interfacelist_t *il;
+  interface_list_t *il = NULL;
 
   /* Scan attribute list for device name. */
   mnl_attr_for_each(attr, msg, sizeof(*ifi)) {
@@ -395,34 +318,49 @@ static int connectivity_link_state(struct nlmsghdr *msg) {
 
     dev = mnl_attr_get_str(attr);
 
-    for (il = interfacelist_head; il != NULL; il = il->next)
+    // Check the list of interfaces we should monitor, if we've chosen
+    // a subset.  If we don't care about this one, abort.
+    if (ignorelist_match(ignorelist, dev) != 0) {
+      DEBUG("connectivity plugin: Ignoring link state change for unmonitored "
+            "interface: %s",
+            dev);
+      break;
+    }
+
+    for (il = interface_list_head; il != NULL; il = il->next)
       if (strcmp(dev, il->interface) == 0)
         break;
 
+    uint32_t prev_status;
+
     if (il == NULL) {
-      DEBUG("connectivity plugin: Ignoring link state change for unmonitored "
-           "interface: %s",
-           dev);
-    } else {
-      uint32_t prev_status;
-      
-      prev_status = il->status;
-      il->status = ((ifi->ifi_flags & IFF_RUNNING) ? 1 : 0);
-      il->timestamp = (long long unsigned int)CDTIME_T_TO_US(cdtime());
+      // We haven't encountered this interface yet, so add it to the linked list
+      il = add_interface(dev, LINK_STATE_UNKNOWN, LINK_STATE_UNKNOWN);
 
-      // If the new status is different than the previous status,
-      // store the previous status and set sent to zero
-      if (il->status != prev_status) {
-        il->prev_status = prev_status;
-        il->sent = 0;
+      if (il == NULL) {
+        ERROR("connectivity plugin: unable to add interface %s during "
+              "connectivity_link_state",
+              dev);
+        return MNL_CB_ERROR;
       }
-
-      INFO("connectivity plugin (%llu): Interface %s status is now %s",
-           il->timestamp, dev,
-           ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
     }
 
-    // no need to loop again, we found the interface name
+    prev_status = il->status;
+    il->status =
+        ((ifi->ifi_flags & IFF_RUNNING) ? LINK_STATE_UP : LINK_STATE_DOWN);
+    il->timestamp = (long long unsigned int)CDTIME_T_TO_US(cdtime());
+
+    // If the new status is different than the previous status,
+    // store the previous status and set sent to zero
+    if (il->status != prev_status) {
+      il->prev_status = prev_status;
+      il->sent = 0;
+    }
+
+    DEBUG("connectivity plugin (%llu): Interface %s status is now %s",
+          il->timestamp, dev, ((ifi->ifi_flags & IFF_RUNNING) ? "UP" : "DOWN"));
+
+    // no need to loop again, we found the interface name attr
     // (otherwise the first if-statement in the loop would
     // have moved us on with 'continue')
     break;
@@ -436,17 +374,14 @@ static int connectivity_link_state(struct nlmsghdr *msg) {
 static int msg_handler(struct nlmsghdr *msg) {
   switch (msg->nlmsg_type) {
   case RTM_NEWADDR:
-    break;
   case RTM_DELADDR:
-    break;
   case RTM_NEWROUTE:
-    break;
   case RTM_DELROUTE:
+  case RTM_DELLINK:
+    // Not of interest in current version
     break;
   case RTM_NEWLINK:
     connectivity_link_state(msg);
-    break;
-  case RTM_DELLINK:
     break;
   default:
     ERROR("connectivity plugin: msg_handler: Unknown netlink nlmsg_type %d\n",
@@ -492,8 +427,7 @@ static int read_event(struct mnl_socket *nl,
 
     /* Message is some kind of error */
     if (h->nlmsg_type == NLMSG_ERROR) {
-      ERROR("connectivity plugin: read_event: Message is an error - decode "
-            "TBD\n");
+      ERROR("connectivity plugin: read_event: Message is an error\n");
       return -1; // Error
     }
 
@@ -617,7 +551,7 @@ static int stop_thread(int shutdown) /* {{{ */
     // the case of a shutdown is just assures that the thread is
     // gone and that the process has been fully terminated.
 
-    INFO("connectivity plugin: Canceling thread for process shutdown");
+    DEBUG("connectivity plugin: Canceling thread for process shutdown");
 
     status = pthread_cancel(connectivity_thread_id);
 
@@ -638,16 +572,16 @@ static int stop_thread(int shutdown) /* {{{ */
   connectivity_thread_error = 0;
   pthread_mutex_unlock(&connectivity_lock);
 
-  INFO("connectivity plugin: Finished requesting stop of thread");
+  DEBUG("connectivity plugin: Finished requesting stop of thread");
 
   return (status);
 } /* }}} int stop_thread */
 
 static int connectivity_init(void) /* {{{ */
 {
-  if (interfacelist_head == NULL) {
-    NOTICE("connectivity plugin: No interfaces have been configured.");
-    return (-1);
+  if (monitor_all_interfaces) {
+    NOTICE("connectivity plugin: No interfaces have been selected, so all will "
+           "be monitored");
   }
 
   return (start_thread());
@@ -655,35 +589,13 @@ static int connectivity_init(void) /* {{{ */
 
 static int connectivity_config(const char *key, const char *value) /* {{{ */
 {
+  if (ignorelist == NULL) {
+    ignorelist = ignorelist_create(/* invert = */ 1);
+  }
+
   if (strcasecmp(key, "Interface") == 0) {
-    interfacelist_t *il;
-    char *interface;
-
-    il = malloc(sizeof(*il));
-    if (il == NULL) {
-      char errbuf[1024];
-      ERROR("connectivity plugin: malloc failed during connectivity_config: %s",
-            sstrerror(errno, errbuf, sizeof(errbuf)));
-      return (1);
-    }
-
-    interface = strdup(value);
-    if (interface == NULL) {
-      char errbuf[1024];
-      sfree(il);
-      ERROR("connectivity plugin: strdup failed connectivity_config: %s",
-            sstrerror(errno, errbuf, sizeof(errbuf)));
-      return (1);
-    }
-
-    il->interface = interface;
-    il->status = 2; // "unknown"
-    il->prev_status = 2;
-    il->timestamp = (long long unsigned int)CDTIME_T_TO_US(cdtime());
-    il->sent = 0;
-    il->next = interfacelist_head;
-    interfacelist_head = il;
-
+    ignorelist_add(ignorelist, value);
+    monitor_all_interfaces = 0;
   } else {
     return (-1);
   }
@@ -691,93 +603,30 @@ static int connectivity_config(const char *key, const char *value) /* {{{ */
   return (0);
 } /* }}} int connectivity_config */
 
-// static void submit(const char *interface, const char *type, /* {{{ */
-//                    gauge_t value, uint32_t sec, uint32_t usec) {
-//   value_list_t vl = VALUE_LIST_INIT;
-//   char hostname[1024];
-//   vl.values = &(value_t){.gauge = value};
-//   vl.values_len = 1;
-//   sstrncpy(vl.plugin, "connectivity", sizeof(vl.plugin));
-//   sstrncpy(vl.type_instance, interface, sizeof(vl.type_instance));
-//   sstrncpy(vl.type, type, sizeof(vl.type));
+static void connectivity_dispatch_notification(
+    const char *interface, const char *type, /* {{{ */
+    gauge_t value, gauge_t old_value, long long unsigned int timestamp) {
 
-//   // Create metadata to store JSON key-values
-//   meta_data_t *meta = meta_data_create();
+  notification_t n = {
+      NOTIF_FAILURE, cdtime(), "", "", "connectivity", "", "", "", NULL};
 
-//   vl.meta = meta;
-//   // For latency measurement
-//   struct timeval tv;
-//   gettimeofday(&tv, NULL);
-//   gethostname(hostname, sizeof(hostname));
-//   char strSec[11];
-//   char struSec[11];
-//   snprintf(strSec, sizeof strSec, "%" PRIu32, sec);
-//   snprintf(struSec, sizeof struSec, "%" PRIu32, usec);
-//   if (value == 1) {
-//     meta_data_add_string(meta, "condition", "interface_up");
-//     meta_data_add_string(meta, "entity", interface);
-//     meta_data_add_string(meta, "source", hostname);
-//     meta_data_add_string(meta, "sec", strSec);
-//     meta_data_add_string(meta, "usec", struSec);
-//     meta_data_add_string(meta, "dest", "interface_down");
-//   } else {
-//     meta_data_add_string(meta, "condition", "interface_down");
-//     meta_data_add_string(meta, "entity", interface);
-//     meta_data_add_string(meta, "source", hostname);
-//     meta_data_add_string(meta, "sec", strSec);
-//     meta_data_add_string(meta, "usec", struSec);
-//     meta_data_add_string(meta, "dest", "interface_up");
-//   }
-
-//   plugin_dispatch_values(&vl);
-// } /* }}} void interface_submit */
-
-static void connectivity_dispatch_notification(const char *interface, const char *type, /* {{{ */
-                    gauge_t value, long long unsigned int timestamp) {
-  char *buf = NULL;
-  notification_t n = {NOTIF_FAILURE, cdtime(), "", "", "connectivity", "", "", "",
-                      NULL};
-
-  if (value == 1)
+  if (value == LINK_STATE_UP)
     n.severity = NOTIF_OKAY;
 
-  char hostname[1024];
-  gethostname(hostname, sizeof(hostname));
-
-  sstrncpy(n.host, hostname, sizeof(n.host));
+  sstrncpy(n.host, hostname_g, sizeof(n.host));
   sstrncpy(n.plugin_instance, interface, sizeof(n.plugin_instance));
   sstrncpy(n.type, "gauge", sizeof(n.type));
   sstrncpy(n.type_instance, "interface_status", sizeof(n.type_instance));
 
-  gen_message_payload(value, interface, timestamp, &buf);
+  gen_message_payload(value, old_value, interface, timestamp, &n);
 
-  notification_meta_t *m = calloc(1, sizeof(*m));
-
-  if (m == NULL) {
-    char errbuf[1024];
-    sfree(buf);
-    ERROR("connectivity plugin: unable to allocate metadata: %s",
-          sstrerror(errno, errbuf, sizeof(errbuf)));
-    return;
-  }
-
-  sstrncpy(m->name, "ves", sizeof(m->name));
-  m->nm_value.nm_string = sstrdup(buf);
-  m->type = NM_TYPE_STRING;
-  n.meta = m;
-
-  INFO("connectivity plugin: notification message: %s",
-        n.meta->nm_value.nm_string);
-
-  INFO("connectivity plugin: dispatching state %d for interface %s", (int)value,
-        interface);
+  DEBUG("connectivity plugin: dispatching state %d for interface %s",
+        (int)value, interface);
 
   plugin_dispatch_notification(&n);
+  // plugin_notification_meta_free(domain);
+  // plugin_notification_meta_free(header);
   plugin_notification_meta_free(n.meta);
-
-  // malloc'd in gen_message_payload
-  if (buf != NULL)
-    sfree(buf);
 }
 
 static int connectivity_read(void) /* {{{ */
@@ -788,9 +637,10 @@ static int connectivity_read(void) /* {{{ */
 
     stop_thread(0);
 
-    for (interfacelist_t *il = interfacelist_head; il != NULL; il = il->next) {
-      il->status = 2; // signifies "unknown"
-      il->prev_status = 2;
+    for (interface_list_t *il = interface_list_head; il != NULL;
+         il = il->next) {
+      il->status = LINK_STATE_UNKNOWN;
+      il->prev_status = LINK_STATE_UNKNOWN;
       il->sent = 0;
     }
 
@@ -799,7 +649,7 @@ static int connectivity_read(void) /* {{{ */
     return (-1);
   } /* if (connectivity_thread_error != 0) */
 
-  for (interfacelist_t *il = interfacelist_head; il != NULL;
+  for (interface_list_t *il = interface_list_head; il != NULL;
        il = il->next) /* {{{ */
   {
     uint32_t status;
@@ -813,27 +663,28 @@ static int connectivity_read(void) /* {{{ */
     sent = il->sent;
 
     if (status != prev_status && sent == 0) {
-      connectivity_dispatch_notification(il->interface, "gauge", status, il->timestamp);
+      connectivity_dispatch_notification(il->interface, "gauge", status,
+                                         prev_status, il->timestamp);
       il->sent = 1;
     }
 
     pthread_mutex_unlock(&connectivity_lock);
-  } /* }}} for (il = interfacelist_head; il != NULL; il = il->next) */
+  } /* }}} for (il = interface_list_head; il != NULL; il = il->next) */
 
   return (0);
 } /* }}} int connectivity_read */
 
 static int connectivity_shutdown(void) /* {{{ */
 {
-  interfacelist_t *il;
+  interface_list_t *il;
 
-  INFO("connectivity plugin: Shutting down thread.");
+  DEBUG("connectivity plugin: Shutting down thread.");
   if (stop_thread(1) < 0)
     return (-1);
 
-  il = interfacelist_head;
+  il = interface_list_head;
   while (il != NULL) {
-    interfacelist_t *il_next;
+    interface_list_t *il_next;
 
     il_next = il->next;
 
@@ -842,6 +693,8 @@ static int connectivity_shutdown(void) /* {{{ */
 
     il = il_next;
   }
+
+  ignorelist_free(ignorelist);
 
   return (0);
 } /* }}} int connectivity_shutdown */
